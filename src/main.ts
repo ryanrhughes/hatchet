@@ -1155,7 +1155,8 @@ function showMainView(renderer: CliRenderer) {
       launchWithTool("terminal", newWindow);
     } else if (key.name === "d") {
       const wt = getSelectedWorktree();
-      if (wt) {
+      // Only allow deletion of actual worktrees, not the main repository
+      if (wt && !git.isMainWorktree(wt.path)) {
         cleanup();
         transitionToView(() => showDeleteConfirm(renderer, wt));
       }

@@ -111,6 +111,14 @@ export function worktreePath(branch: string): string | null {
   return wt?.path ?? null;
 }
 
+/**
+ * Check if a worktree is the main repository (not a created worktree).
+ * The main repository's path equals the repo root.
+ */
+export function isMainWorktree(worktreePath: string): boolean {
+  return worktreePath === repoRoot();
+}
+
 export function sanitizeBranch(name: string): string {
   return name
     .toLowerCase()
