@@ -85,6 +85,8 @@ Once configured, Hatchet can:
 - Change worktrees for easy context switching
 - Seed Opencode sessions with Fizzy card details
 
+> **Pro tip:** Set your `board` in your project's `.fizzy.yaml` to skip board selection.
+
 ### Create Worktrees from Fizzy Cards
 With `fizzy-cli`, you're able to create worktrees directly from cards in Fizzy without leaving Hatchet.
 
