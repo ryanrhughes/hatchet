@@ -166,10 +166,59 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
   const wtPath = worktreePath(branch);
   if (!wtPath) return;
 
-  execSync(`git worktree remove "${wtPath}" --force`, {
-    cwd: repoRoot(),
-    stdio: "pipe",
-  });
+  try {
+    execSync(`git worktree remove "${wtPath}" --force`, {
+      cwd: repoRoot(),
+      stdio: "pipe",
+    });
+  } catch (error) {
+    // If git worktree remove fails (e.g., orphaned worktree with invalid .git file),
+    // check if the worktree's .git points to a non-existent location
+    const gitFilePath = path.join(wtPath, ".git");
+    
+    if (fs.existsSync(gitFilePath)) {
+      try {
+        const gitContent = fs.readFileSync(gitFilePath, "utf-8");
+        const gitdirMatch = gitContent.match(/^gitdir:\s*(.+)$/m);
+        
+        if (gitdirMatch) {
+          const gitdir = gitdirMatch[1].trim();
+          
+          // If the gitdir doesn't exist, this is an orphaned worktree
+          if (!fs.existsSync(gitdir)) {
+            // Remove the .git file so the directory is no longer seen as a worktree
+            fs.unlinkSync(gitFilePath);
+            // Prune to clean up git's worktree list
+            try {
+              execSync("git worktree prune", {
+                cwd: repoRoot(),
+                stdio: "pipe",
+              });
+            } catch {
+              // Ignore prune errors
+            }
+          } else {
+            // gitdir exists but removal still failed - rethrow
+            throw error;
+          }
+        }
+      } catch (readError) {
+        // If we can't read/parse the .git file, rethrow original error
+        if (readError === error) throw error;
+        throw error;
+      }
+    } else {
+      // No .git file, just prune
+      try {
+        execSync("git worktree prune", {
+          cwd: repoRoot(),
+          stdio: "pipe",
+        });
+      } catch {
+        // Ignore prune errors
+      }
+    }
+  }
 
   if (deleteBranch) {
     try {

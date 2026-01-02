@@ -4,15 +4,15 @@
   "description": "Git Worktree Manager TUI with Fizzy integration",
   "type": "module",
   "bin": {
-    "hatchet": "./dist/main.js",
-    "wt": "./dist/main.js"
+    "hatchet": "./src/main.ts"
   },
   "scripts": {
     "build": "bun build src/main.ts --outdir dist --target bun",
     "dev": "bun --watch src/main.ts",
     "start": "bun dist/main.js",
     "hatchet": "bun src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "link": "ln -sf $(pwd)/src/main.ts ~/.local/bin/hatchet && chmod +x src/main.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.1.13"

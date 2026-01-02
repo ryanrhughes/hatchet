@@ -28,9 +28,25 @@ import * as terminal from "./helpers/terminal";
 
 // Helper to clear all children from a renderable (no removeAll() in OpenTUI)
 function clearChildren(parent: Renderable): void {
-  for (const child of parent.getChildren()) {
-    child.destroyRecursively();
+  // Get a copy of children array to avoid issues during iteration
+  const children = [...parent.getChildren()];
+  for (const child of children) {
+    try {
+      child.destroyRecursively();
+    } catch {
+      // Ignore errors from already-destroyed nodes
+    }
   }
+}
+
+// Safe view transition helper
+function transitionToView(showView: () => void): void {
+  if (isTransitioning) return;
+  isTransitioning = true;
+  process.nextTick(() => {
+    showView();
+    isTransitioning = false;
+  });
 }
 
 // Helper for list navigation with wrap-around
@@ -208,13 +224,263 @@ function createButtonGroup(
   return { container, buttons, texts, updateSelection };
 }
 
+// ============================================================================
+// Selection List Component
+// ============================================================================
+
+interface SelectionListOptions<T> {
+  renderer: CliRenderer;
+  /** The view name for guard checks */
+  viewName: ViewType;
+  /** Title shown in the header */
+  title: string;
+  /** Subtitle shown in the header (right side) */
+  subtitle?: string;
+  /** Modal width (default: 50) */
+  width?: number;
+  /** Items to select from */
+  items: T[];
+  /** Render a tile for an item */
+  renderItem: (item: T, selected: boolean) => BoxRenderable;
+  /** Called when an item is selected */
+  onSelect: (item: T) => void;
+  /** Called when back/escape is pressed */
+  onBack: () => void;
+  /** Optional footer text (e.g., tips) */
+  footerText?: string;
+  /** Status bar text (default: "j/k navigate  enter select  esc back") */
+  statusText?: string;
+}
+
+interface SelectionListComponents {
+  container: BoxRenderable;
+  /** Call this to clean up the key handler */
+  cleanup: () => void;
+}
+
+/**
+ * Create a selection list with keyboard navigation
+ */
+function createSelectionList<T>(options: SelectionListOptions<T>): SelectionListComponents {
+  const {
+    renderer,
+    viewName,
+    title,
+    subtitle,
+    width = 50,
+    items,
+    renderItem,
+    onSelect,
+    onBack,
+    footerText,
+    statusText = "j/k navigate  enter select  esc back",
+  } = options;
+
+  // Full screen container
+  const container = new BoxRenderable(renderer, {
+    width: "100%",
+    height: "100%",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Theme.transparent,
+  });
+
+  // Modal-style box
+  const modal = new BoxRenderable(renderer, {
+    width,
+    flexDirection: "column",
+    backgroundColor: Theme.backgroundSubtle,
+    border: true,
+    borderColor: Theme.muted,
+    borderStyle: "rounded",
+    paddingTop: 1,
+    paddingBottom: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+  });
+
+  // Header
+  const headerRow = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: Theme.transparent,
+    marginBottom: 1,
+  });
+  headerRow.add(new TextRenderable(renderer, {
+    content: title,
+    fg: Theme.accent,
+  }));
+  if (subtitle) {
+    headerRow.add(new TextRenderable(renderer, {
+      content: subtitle,
+      fg: Theme.muted,
+    }));
+  }
+  modal.add(headerRow);
+
+  // Tiles container
+  const tilesContainer = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    backgroundColor: Theme.transparent,
+  });
+  modal.add(tilesContainer);
+
+  // Selection state
+  let selectedIndex = 0;
+  const tiles: BoxRenderable[] = [];
+  let isDestroyed = false;
+
+  // Build tiles
+  let isRebuilding = false;
+  const rebuildTiles = () => {
+    if (isRebuilding || isDestroyed) return;
+    isRebuilding = true;
+
+    // Clear existing tiles
+    for (const tile of tiles) {
+      tilesContainer.remove(tile.id);
+      tile.destroyRecursively();
+    }
+    tiles.length = 0;
+
+    // Create new tiles
+    items.forEach((item, index) => {
+      const tile = renderItem(item, index === selectedIndex);
+      tiles.push(tile);
+      tilesContainer.add(tile);
+    });
+
+    isRebuilding = false;
+  };
+
+  rebuildTiles();
+
+  // Footer text (e.g., tips)
+  if (footerText) {
+    modal.add(new TextRenderable(renderer, { content: "" }));
+    modal.add(new TextRenderable(renderer, {
+      content: footerText,
+      fg: Theme.muted,
+    }));
+  }
+
+  // Status bar
+  modal.add(new TextRenderable(renderer, { content: "" }));
+  modal.add(new TextRenderable(renderer, {
+    content: statusText,
+    fg: Theme.muted,
+  }));
+
+  container.add(modal);
+
+  // Key handler
+  const keyHandler = (key: { name?: string }) => {
+    if (currentView !== viewName || isDestroyed || isTransitioning) return;
+
+    if (key.name === "j" || key.name === "down") {
+      selectedIndex = wrapIndex(selectedIndex + 1, items.length);
+      rebuildTiles();
+    } else if (key.name === "k" || key.name === "up") {
+      selectedIndex = wrapIndex(selectedIndex - 1, items.length);
+      rebuildTiles();
+    } else if (key.name === "return" || key.name === "enter") {
+      isDestroyed = true;
+      renderer.keyInput.off("keypress", keyHandler);
+      const item = items[selectedIndex];
+      transitionToView(() => onSelect(item));
+    } else if (key.name === "escape") {
+      isDestroyed = true;
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(() => onBack());
+    }
+  };
+  renderer.keyInput.on("keypress", keyHandler);
+
+  const cleanup = () => {
+    isDestroyed = true;
+    renderer.keyInput.off("keypress", keyHandler);
+  };
+
+  return { container, cleanup };
+}
+
+// ============================================================================
+// Selection List Tile Helpers
+// ============================================================================
+
+/** Create a standard text tile */
+function createTextTile(
+  renderer: CliRenderer,
+  text: string,
+  selected: boolean,
+  options?: { 
+    description?: string;
+    borderColor?: string;
+    selectedBorderColor?: string;
+  }
+): BoxRenderable {
+  const { description, borderColor = Theme.muted, selectedBorderColor = Theme.accent } = options ?? {};
+  
+  const tile = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    border: true,
+    borderColor: selected ? selectedBorderColor : borderColor,
+    borderStyle: "rounded",
+    backgroundColor: Theme.transparent,
+    paddingLeft: 1,
+    paddingRight: 1,
+    marginBottom: 1,
+  });
+
+  tile.add(new TextRenderable(renderer, {
+    content: text,
+    fg: selected ? Theme.textBright : Theme.text,
+  }));
+
+  if (description) {
+    tile.add(new TextRenderable(renderer, {
+      content: description,
+      fg: Theme.muted,
+    }));
+  }
+
+  return tile;
+}
+
+/** Create a back button tile */
+function createBackTile(renderer: CliRenderer, selected: boolean): BoxRenderable {
+  const tile = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "row",
+    border: true,
+    borderColor: selected ? Theme.accent : Theme.muted,
+    borderStyle: "rounded",
+    backgroundColor: Theme.transparent,
+    paddingLeft: 1,
+    paddingRight: 1,
+  });
+  tile.add(new TextRenderable(renderer, {
+    content: "\u2190 Back",
+    fg: selected ? Theme.accent : Theme.muted,
+  }));
+  return tile;
+}
+
 // Track current view for navigation
 type ViewType = "main" | "create" | "fizzy-boards" | "fizzy-columns" | "fizzy-cards" | "confirm" | "switch-confirm" | "delete-confirm";
 let currentView: ViewType = "main";
+// Flag to prevent operations during view transitions
+let isTransitioning = false;
 
 // Track the current board and column for navigation
 let currentBoard: { id: string; name: string } | null = null;
 let currentColumnId: string | null = null;
+// Track if the board was manually selected (vs auto-selected from config)
+let boardManuallySelected = false;
 
 // Fizzy authentication status (checked once at startup)
 let fizzyAuthenticated = false;
@@ -251,24 +517,26 @@ async function main() {
     }
     
     if (key.name === "escape") {
+      if (isTransitioning) return;
+      
       if (currentView === "main") {
         renderer.destroy();
         process.exit(0);
-      } else if (currentView === "fizzy-cards") {
+      } else if (currentView === "fizzy-cards" || currentView === "fizzy-boards" || currentView === "fizzy-columns") {
         // Don't handle here - let the view's own handler deal with it
         return;
       } else if (currentView === "confirm") {
         // Go back to cards view
         if (currentBoard) {
-          showFizzyCards(renderer, currentBoard, currentColumnId);
+          transitionToView(() => showFizzyCards(renderer, currentBoard!, currentColumnId));
         } else {
-          showMainView(renderer);
+          transitionToView(() => showMainView(renderer));
         }
       } else if (currentView === "switch-confirm" || currentView === "delete-confirm") {
         // Go back to main worktree list
-        showMainView(renderer);
+        transitionToView(() => showMainView(renderer));
       } else {
-        showMainView(renderer);
+        transitionToView(() => showMainView(renderer));
       }
     }
   });
@@ -798,7 +1066,7 @@ function showMainView(renderer: CliRenderer) {
       // See AGENTS.md for explanation of this pattern
       if (item.action === CREATE_NEW) {
         cleanup();
-        process.nextTick(() => showCreateWorktree(renderer));
+        transitionToView(() => showCreateWorktree(renderer));
       } else if (item.action === CREATE_FROM_FIZZY) {
         // Only proceed if authenticated
         if (!fizzyAuthenticated) {
@@ -810,9 +1078,10 @@ function showMainView(renderer: CliRenderer) {
         const defaultBoard = fizzy.getDefaultBoard();
         if (defaultBoard) {
           currentBoard = defaultBoard;
-          process.nextTick(() => showFizzyColumns(renderer, defaultBoard));
+          boardManuallySelected = false;
+          transitionToView(() => showFizzyColumns(renderer, defaultBoard));
         } else {
-          process.nextTick(() => showFizzyBoards(renderer));
+          transitionToView(() => showFizzyBoards(renderer));
         }
       }
     } else {
@@ -865,6 +1134,8 @@ function showMainView(renderer: CliRenderer) {
 
   // Key handlers
   keyHandler = (key: { name?: string; shift?: boolean }) => {
+    if (currentView !== "main" || isTransitioning) return;
+    
     const newWindow = key.shift === true;
     
     // Navigation
@@ -886,7 +1157,7 @@ function showMainView(renderer: CliRenderer) {
       const wt = getSelectedWorktree();
       if (wt) {
         cleanup();
-        showDeleteConfirm(renderer, wt);
+        transitionToView(() => showDeleteConfirm(renderer, wt));
       }
     } else if (key.name === "q") {
       renderer.destroy();
@@ -960,6 +1231,8 @@ function showDeleteConfirm(renderer: CliRenderer, worktree: { branch: string; pa
 
   // Key handler
   const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "delete-confirm" || isTransitioning) return;
+    
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
       selectedIndex = selectedIndex === 0 ? 1 : 0;
       buttonGroup.updateSelection(selectedIndex);
@@ -968,11 +1241,10 @@ function showDeleteConfirm(renderer: CliRenderer, worktree: { branch: string; pa
       if (selectedIndex === 1) {
         git.removeWorktree(worktree.branch);
       }
-      // Defer to prevent enter from bleeding through to next view
-      process.nextTick(() => showMainView(renderer));
+      transitionToView(() => showMainView(renderer));
     } else if (key.name === "escape") {
       renderer.keyInput.off("keypress", keyHandler);
-      process.nextTick(() => showMainView(renderer));
+      transitionToView(() => showMainView(renderer));
     }
   };
   renderer.keyInput.on("keypress", keyHandler);
@@ -1076,6 +1348,7 @@ function showCreateWorktree(renderer: CliRenderer) {
   input.on(InputRenderableEvents.INPUT, updatePreview);
 
   input.on(InputRenderableEvents.ENTER, () => {
+    if (isTransitioning) return;
     const branchName = input.value.trim();
     if (branchName) {
       try {
@@ -1086,10 +1359,10 @@ function showCreateWorktree(renderer: CliRenderer) {
           .replace(/\s+/g, "-")
           .replace(/[^a-z0-9\-_/.]/g, "")
           .replace(/^[-.]+|[-.]+$/g, "");
-        showMainView(renderer);
+        transitionToView(() => showMainView(renderer));
       } catch (error) {
         // Show error - for now just go back
-        showMainView(renderer);
+        transitionToView(() => showMainView(renderer));
       }
     }
   });
@@ -1105,114 +1378,63 @@ function showFizzyBoards(renderer: CliRenderer) {
   const root = renderer.root;
   clearChildren(root);
 
-  // Create centered container
-  const container = new BoxRenderable(renderer, {
-    width: "100%",
-    height: "100%",
-    flexDirection: "column",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: Theme.transparent,
-  });
-
-  // Content box
-  const content = new BoxRenderable(renderer, {
-    width: 60,
-    flexDirection: "column",
-    alignItems: "center",
-    backgroundColor: Theme.transparent,
-  });
-
-  // Header
-  content.add(
-    new TextRenderable(renderer, {
-      content: `wt │ ${git.repoName()}`,
-      fg: Theme.secondary,
-    })
-  );
-  content.add(new TextRenderable(renderer, { content: "" }));
-
-  // Title
-  content.add(
-    new TextRenderable(renderer, {
-      content: "Select Fizzy Board",
-      fg: Theme.accent,
-    })
-  );
-  content.add(new TextRenderable(renderer, { content: "" }));
-
   // Fetch boards
   const boards = fizzy.fetchBoards();
 
+  // Handle empty state
   if (boards.length === 0) {
-    content.add(
-      new TextRenderable(renderer, {
-        content: "No boards found. Check Fizzy configuration.",
-        fg: Theme.warning,
-      })
-    );
-    content.add(new TextRenderable(renderer, { content: "" }));
-    content.add(
-      new TextRenderable(renderer, {
-        content: "esc/q back",
-        fg: Theme.muted,
-      })
-    );
-    container.add(content);
+    const { container, modal } = createModal(renderer, {
+      title: "Select Board",
+      subtitle: git.repoName(),
+      width: 50,
+    });
+    modal.add(new TextRenderable(renderer, {
+      content: "No boards found. Check Fizzy configuration.",
+      fg: Theme.warning,
+    }));
+    modal.add(new TextRenderable(renderer, { content: "" }));
+    modal.add(new TextRenderable(renderer, {
+      content: "esc back",
+      fg: Theme.muted,
+    }));
     root.add(container);
     return;
   }
 
-  // Board options
-  const options = boards.map((board) => ({
-    name: board.name,
-    description: board.description || "",
-    value: board,
-  }));
-  options.push({ name: "← Back", description: "", value: null as any });
+  // Build items list - boards + back option
+  type BoardItem = { type: "board"; board: typeof boards[0] } | { type: "back" };
+  const items: BoardItem[] = boards.map(board => ({ type: "board", board }));
+  items.push({ type: "back" });
 
-  const select = new SelectRenderable(renderer, {
+  const { container } = createSelectionList<BoardItem>({
+    renderer,
+    viewName: "fizzy-boards",
+    title: "Select Board",
+    subtitle: git.repoName(),
     width: 50,
-    height: Math.min(options.length * 2 + 2, 20),
-    options,
-    wrapSelection: true,
-    showDescription: true,
-    backgroundColor: Theme.backgroundSubtle,
-    focusedBackgroundColor: Theme.backgroundSubtle,
-    textColor: Theme.text,
-    focusedTextColor: Theme.text,
-    selectedBackgroundColor: Theme.selected,
-    selectedTextColor: Theme.textBright,
-    descriptionColor: Theme.muted,
-    selectedDescriptionColor: Theme.text,
+    items,
+    renderItem: (item, selected) => {
+      if (item.type === "back") {
+        return createBackTile(renderer, selected);
+      }
+      return createTextTile(renderer, item.board.name, selected, {
+        description: item.board.description,
+      });
+    },
+    onSelect: (item) => {
+      if (item.type === "back") {
+        showMainView(renderer);
+      } else {
+        currentBoard = item.board;
+        boardManuallySelected = true;
+        showFizzyColumns(renderer, item.board);
+      }
+    },
+    onBack: () => showMainView(renderer),
+    footerText: "Tip: Add board: <name> to .fizzy.yaml to skip this",
   });
 
-  select.on(SelectRenderableEvents.ITEM_SELECTED, (_idx, opt) => {
-    // Defer navigation to next tick to prevent enter key from bleeding through
-    if (opt.value === null) {
-      process.nextTick(() => showMainView(renderer));
-      return;
-    }
-    currentBoard = opt.value;
-    process.nextTick(() => showFizzyColumns(renderer, opt.value));
-  });
-
-  content.add(select);
-
-  // Status
-  content.add(new TextRenderable(renderer, { content: "" }));
-  content.add(
-    new TextRenderable(renderer, {
-      content: "j/k navigate  enter select  esc/q back",
-      fg: Theme.muted,
-    })
-  );
-
-  container.add(content);
   root.add(container);
-  
-  // Defer focus to next tick to prevent Enter key from immediately triggering selection
-  setTimeout(() => select.focus(), 0);
 }
 
 function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: string }) {
@@ -1235,101 +1457,14 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
     }
     items.push({ type: "back" });
 
-    // Full screen container
-    const container = new BoxRenderable(renderer, {
-      width: "100%",
-      height: "100%",
-      flexDirection: "column",
-      justifyContent: "center",
-      alignItems: "center",
-      backgroundColor: Theme.transparent,
-    });
-
-    // Modal-style box
-    const modal = new BoxRenderable(renderer, {
-      width: 45,
-      flexDirection: "column",
-      backgroundColor: Theme.backgroundSubtle,
-      border: true,
-      borderColor: Theme.muted,
-      borderStyle: "rounded",
-      paddingTop: 1,
-      paddingBottom: 1,
-      paddingLeft: 2,
-      paddingRight: 2,
-    });
-
-    // Header
-    const headerRow = new BoxRenderable(renderer, {
-      width: "100%",
-      flexDirection: "row",
-      justifyContent: "space-between",
-      backgroundColor: Theme.transparent,
-      marginBottom: 1,
-    });
-    headerRow.add(new TextRenderable(renderer, {
-      content: "Select Column",
-      fg: Theme.accent,
-    }));
-    headerRow.add(new TextRenderable(renderer, {
-      content: board.name,
-      fg: Theme.muted,
-    }));
-    modal.add(headerRow);
-
-    // Container for the column tiles (so status bar stays at bottom)
-    const tilesContainer = new BoxRenderable(renderer, {
-      width: "100%",
-      flexDirection: "column",
-      backgroundColor: Theme.transparent,
-    });
-    modal.add(tilesContainer);
-
-    // Selection state
-    let selectedIndex = 0;
-    const tiles: BoxRenderable[] = [];
-
-    // Create a tile for an item
-    const createTile = (item: ColumnItem, selected: boolean): BoxRenderable => {
+    // Render function for column tiles
+    const renderColumnTile = (item: ColumnItem, selected: boolean): BoxRenderable => {
       if (item.type === "all") {
-        const colColor = Theme.accent;
-        const tile = new BoxRenderable(renderer, {
-          width: "100%",
-          flexDirection: "row",
-          alignItems: "center",
-          border: true,
-          borderColor: selected ? colColor : Theme.muted,
-          borderStyle: "rounded",
-          backgroundColor: Theme.transparent,
-          paddingLeft: 1,
-          paddingRight: 1,
-          marginBottom: 1,
+        return createTextTile(renderer, "All columns", selected, {
+          selectedBorderColor: Theme.accent,
         });
-        tile.add(new TextRenderable(renderer, {
-          content: "\uf0c9",  // nf-fa-bars (list icon)
-          fg: colColor,
-        }));
-        tile.add(new TextRenderable(renderer, {
-          content: "  All columns",
-          fg: selected ? Theme.textBright : Theme.text,
-        }));
-        return tile;
       } else if (item.type === "back") {
-        const tile = new BoxRenderable(renderer, {
-          width: "100%",
-          flexDirection: "row",
-          border: true,
-          borderColor: selected ? Theme.accent : Theme.muted,
-          borderStyle: "rounded",
-          backgroundColor: Theme.transparent,
-          paddingLeft: 1,
-          paddingRight: 1,
-        });
-        tile.add(new TextRenderable(renderer, {
-          content: "\u2190 Back",
-          fg: selected ? Theme.accent : Theme.muted,
-        }));
-        return tile;
+        return createBackTile(renderer, selected);
       } else {
         // Column tile with color indicator
         const col = item.column;
@@ -1362,71 +1497,39 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
       }
     };
 
-    // Build tiles
-    let isRebuilding = false;
-    const rebuildTiles = () => {
-      if (isRebuilding) return;
-      isRebuilding = true;
-      
-      // Clear existing tiles
-      for (const tile of tiles) {
-        tilesContainer.remove(tile.id);
-        tile.destroyRecursively();
-      }
-      tiles.length = 0;
-
-      // Create new tiles
-      items.forEach((item, index) => {
-        const tile = createTile(item, index === selectedIndex);
-        tiles.push(tile);
-        tilesContainer.add(tile);
-      });
-      
-      isRebuilding = false;
-    };
-
-    rebuildTiles();
-
-    // Status bar
-    modal.add(new TextRenderable(renderer, { content: "" }));
-    const statusText = new TextRenderable(renderer, {
-      content: "j/k navigate  enter select  esc back",
-      fg: Theme.muted,
-    });
-    modal.add(statusText);
-
-    container.add(modal);
-    root.add(container);
-
-    // Key handler
-    const keyHandler = (key: { name?: string }) => {
-      if (currentView !== "fizzy-columns") return;
-
-      if (key.name === "j" || key.name === "down") {
-        selectedIndex = wrapIndex(selectedIndex + 1, items.length);
-        rebuildTiles();
-      } else if (key.name === "k" || key.name === "up") {
-        selectedIndex = wrapIndex(selectedIndex - 1, items.length);
-        rebuildTiles();
-      } else if (key.name === "return" || key.name === "enter") {
-        renderer.keyInput.off("keypress", keyHandler);
-        const item = items[selectedIndex];
-        
-        process.nextTick(() => {
-          if (item.type === "back") {
+    const { container } = createSelectionList<ColumnItem>({
+      renderer,
+      viewName: "fizzy-columns",
+      title: "Select Column",
+      subtitle: board.name,
+      width: 45,
+      items,
+      renderItem: renderColumnTile,
+      onSelect: (item) => {
+        if (item.type === "back") {
+          // Go back to boards if manually selected, otherwise main view
+          if (boardManuallySelected) {
             showFizzyBoards(renderer);
-          } else if (item.type === "all") {
-            showFizzyCards(renderer, board, null);
           } else {
-            showFizzyCards(renderer, board, item.column.id as string);
+            showMainView(renderer);
           }
-        });
-      } else if (key.name === "escape") {
-        renderer.keyInput.off("keypress", keyHandler);
-        process.nextTick(() => showFizzyBoards(renderer));
-      }
-    };
-    renderer.keyInput.on("keypress", keyHandler);
+        } else if (item.type === "all") {
+          showFizzyCards(renderer, board, null);
+        } else {
+          showFizzyCards(renderer, board, item.column.id as string);
+        }
+      },
+      onBack: () => {
+        // Go back to boards if manually selected, otherwise main view
+        if (boardManuallySelected) {
+          showFizzyBoards(renderer);
+        } else {
+          showMainView(renderer);
+        }
+      },
+    });
+
+    root.add(container);
 
   } catch (e) {
     console.error("showFizzyColumns error:", e);
@@ -1460,8 +1563,8 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
   });
   headerRow.add(
     new TextRenderable(renderer, {
-      content: `wt │ ${git.repoName()} │ ${board.name}`,
-      fg: Theme.secondary,
+      content: `🪓 Hatchet │ ${git.repoName()} │ ${board.name}`,
+      fg: Theme.primary,
     })
   );
   container.add(headerRow);
@@ -1648,7 +1751,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
   
   const keyHandler = (key: { name: string }) => {
     // Only handle keys when this view is active
-    if (currentView !== "fizzy-cards") return;
+    if (currentView !== "fizzy-cards" || isTransitioning) return;
     
     if (key.name === "tab") {
       if (focusedPane === "list") {
@@ -1677,7 +1780,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
       } else {
         // Escape from list goes back to columns
         renderer.keyInput.off("keypress", keyHandler);
-        process.nextTick(() => showFizzyColumns(renderer, board));
+        transitionToView(() => showFizzyColumns(renderer, board));
       }
     } else if (key.name === "return" || key.name === "enter") {
       if (focusedPane === "filter") {
@@ -2042,6 +2145,8 @@ function showWorktreeExistsPrompt(
 
   // Key handler
   const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "confirm" || isTransitioning) return;
+    
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
       selectedIndex = selectedIndex === 0 ? 1 : 0;
       buttonGroup.updateSelection(selectedIndex);
@@ -2055,11 +2160,10 @@ function showWorktreeExistsPrompt(
           // Ignore errors
         }
       }
-      // Either way, go back to main view
-      process.nextTick(() => showMainView(renderer));
+      transitionToView(() => showMainView(renderer));
     } else if (key.name === "escape") {
       renderer.keyInput.off("keypress", keyHandler);
-      process.nextTick(() => showMainView(renderer));
+      transitionToView(() => showMainView(renderer));
     }
   };
   renderer.keyInput.on("keypress", keyHandler);
@@ -2260,7 +2364,7 @@ function showSwitchWithContextPrompt(
 
   // Key handler
   const keyHandler = (key: { name?: string; shift?: boolean }) => {
-    if (currentView !== "switch-confirm") return;
+    if (currentView !== "switch-confirm" || isTransitioning) return;
 
     const keyNewWindow = key.shift === true;
 
@@ -2278,7 +2382,7 @@ function showSwitchWithContextPrompt(
       renderer.keyInput.off("keypress", keyHandler);
       const item = items[selectedIndex];
 
-      process.nextTick(() => {
+      transitionToView(() => {
         if (item.type === "back") {
           showMainView(renderer);
         } else {
@@ -2293,7 +2397,7 @@ function showSwitchWithContextPrompt(
       });
     } else if (key.name === "escape") {
       renderer.keyInput.off("keypress", keyHandler);
-      process.nextTick(() => showMainView(renderer));
+      transitionToView(() => showMainView(renderer));
     } else if (key.name === "o" || key.name === "O") {
       const prompt = getIncludeContext() ? fizzy.generateInitialPrompt(card, cardNumber) : undefined;
       if (keyNewWindow) {
