@@ -7,7 +7,9 @@ This document contains important patterns and conventions for developing the `ha
 - `src/main.ts` - Main application with all views
 - `src/helpers/git.ts` - Git worktree operations
 - `src/helpers/fizzy.ts` - Fizzy (task management) integration
-- `src/helpers/markdown.ts` - Markdown/HTML rendering
+- `src/helpers/html.ts` - HTML to TUI rendering
+- `src/helpers/image.ts` - Image extraction and placeholders
+- `src/helpers/terminal.ts` - Terminal launcher utilities
 - `src/helpers/card-tile.ts` - Fizzy card tile component
 - `src/theme.ts` - Color theming system
 - `src/types.ts` - TypeScript type definitions

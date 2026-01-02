@@ -24,6 +24,7 @@ import {
   createImagePlaceholder,
   type ImageInfo 
 } from "./helpers/image";
+import * as terminal from "./helpers/terminal";
 
 // Helper to clear all children from a renderable (no removeAll() in OpenTUI)
 function clearChildren(parent: Renderable): void {
@@ -123,6 +124,88 @@ function createModal(renderer: CliRenderer, options: ModalOptions): ModalCompone
   container.add(modal);
 
   return { container, modal, content };
+}
+
+// ============================================================================
+// Button Group Component
+// ============================================================================
+
+interface ButtonConfig {
+  label: string;
+  /** Color when selected (default: Theme.selected) */
+  selectedBg?: string;
+  /** Border color when selected (default: Theme.accent) */
+  selectedBorder?: string;
+}
+
+interface ButtonGroupComponents {
+  container: BoxRenderable;
+  buttons: BoxRenderable[];
+  texts: TextRenderable[];
+  /** Update button visual styles based on selection */
+  updateSelection: (selectedIndex: number) => void;
+}
+
+/**
+ * Create a horizontal button group for confirmation dialogs
+ */
+function createButtonGroup(
+  renderer: CliRenderer,
+  buttonConfigs: ButtonConfig[]
+): ButtonGroupComponents {
+  const container = new BoxRenderable(renderer, {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 2,
+    backgroundColor: Theme.transparent,
+  });
+
+  const buttons: BoxRenderable[] = [];
+  const texts: TextRenderable[] = [];
+
+  for (let i = 0; i < buttonConfigs.length; i++) {
+    const config = buttonConfigs[i];
+    const isFirst = i === 0;
+
+    const button = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      backgroundColor: isFirst ? Theme.selected : Theme.transparent,
+      paddingLeft: 2,
+      paddingRight: 2,
+      border: true,
+      borderColor: isFirst ? Theme.accent : Theme.muted,
+      borderStyle: "rounded",
+    });
+
+    const text = new TextRenderable(renderer, {
+      content: config.label,
+      fg: isFirst ? Theme.textBright : Theme.text,
+    });
+
+    button.add(text);
+    container.add(button);
+    buttons.push(button);
+    texts.push(text);
+  }
+
+  const updateSelection = (selectedIndex: number) => {
+    for (let i = 0; i < buttons.length; i++) {
+      const config = buttonConfigs[i];
+      const isSelected = i === selectedIndex;
+
+      if (isSelected) {
+        buttons[i].backgroundColor = config.selectedBg ?? Theme.selected;
+        buttons[i].borderColor = config.selectedBorder ?? Theme.accent;
+        texts[i].fg = Theme.textBright;
+      } else {
+        buttons[i].backgroundColor = Theme.transparent;
+        buttons[i].borderColor = Theme.muted;
+        texts[i].fg = Theme.text;
+      }
+    }
+  };
+
+  return { container, buttons, texts, updateSelection };
 }
 
 // Track current view for navigation
@@ -867,78 +950,29 @@ function showDeleteConfirm(renderer: CliRenderer, worktree: { branch: string; pa
   );
   modal.add(new TextRenderable(renderer, { content: "" }));
 
-  // Button row
-  const buttonRow = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 2,
-    backgroundColor: Theme.transparent,
-  });
-
-  // Track which button is selected
-  let selectedButton: "cancel" | "delete" = "cancel";
-
-  // Create button renderables
-  const cancelButton = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    backgroundColor: Theme.selected,
-    paddingLeft: 2,
-    paddingRight: 2,
-    border: true,
-    borderColor: Theme.accent,
-    borderStyle: "rounded",
-  });
-  cancelButton.add(new TextRenderable(renderer, { content: "Cancel", fg: Theme.textBright }));
-
-  const deleteButton = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    backgroundColor: Theme.transparent,
-    paddingLeft: 2,
-    paddingRight: 2,
-    border: true,
-    borderColor: Theme.muted,
-    borderStyle: "rounded",
-  });
-  deleteButton.add(new TextRenderable(renderer, { content: "Delete", fg: Theme.text }));
-
-  buttonRow.add(cancelButton);
-  buttonRow.add(deleteButton);
-  modal.add(buttonRow);
-
-  // Function to update button styles
-  const updateButtons = () => {
-    if (selectedButton === "cancel") {
-      cancelButton.backgroundColor = Theme.selected;
-      cancelButton.borderColor = Theme.accent;
-      (cancelButton.getChildren()[0] as TextRenderable).fg = Theme.textBright;
-      deleteButton.backgroundColor = Theme.transparent;
-      deleteButton.borderColor = Theme.muted;
-      (deleteButton.getChildren()[0] as TextRenderable).fg = Theme.text;
-    } else {
-      cancelButton.backgroundColor = Theme.transparent;
-      cancelButton.borderColor = Theme.muted;
-      (cancelButton.getChildren()[0] as TextRenderable).fg = Theme.text;
-      deleteButton.backgroundColor = Theme.error;
-      deleteButton.borderColor = Theme.error;
-      (deleteButton.getChildren()[0] as TextRenderable).fg = Theme.textBright;
-    }
-  };
+  // Button group
+  let selectedIndex = 0;
+  const buttonGroup = createButtonGroup(renderer, [
+    { label: "Cancel" },
+    { label: "Delete", selectedBg: Theme.error, selectedBorder: Theme.error },
+  ]);
+  modal.add(buttonGroup.container);
 
   // Key handler
   const keyHandler = (key: { name?: string }) => {
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
-      selectedButton = selectedButton === "cancel" ? "delete" : "cancel";
-      updateButtons();
+      selectedIndex = selectedIndex === 0 ? 1 : 0;
+      buttonGroup.updateSelection(selectedIndex);
     } else if (key.name === "return" || key.name === "enter") {
       renderer.keyInput.off("keypress", keyHandler);
-      if (selectedButton === "delete") {
+      if (selectedIndex === 1) {
         git.removeWorktree(worktree.branch);
       }
       // Defer to prevent enter from bleeding through to next view
-      setTimeout(() => showMainView(renderer), 0);
+      process.nextTick(() => showMainView(renderer));
     } else if (key.name === "escape") {
       renderer.keyInput.off("keypress", keyHandler);
-      showMainView(renderer);
+      process.nextTick(() => showMainView(renderer));
     }
   };
   renderer.keyInput.on("keypress", keyHandler);
@@ -1061,7 +1095,9 @@ function showCreateWorktree(renderer: CliRenderer) {
   });
 
   root.add(container);
-  input.focus();
+  
+  // Defer focus to next tick to prevent Enter key from immediately triggering
+  setTimeout(() => input.focus(), 0);
 }
 
 function showFizzyBoards(renderer: CliRenderer) {
@@ -1174,7 +1210,9 @@ function showFizzyBoards(renderer: CliRenderer) {
 
   container.add(content);
   root.add(container);
-  select.focus();
+  
+  // Defer focus to next tick to prevent Enter key from immediately triggering selection
+  setTimeout(() => select.focus(), 0);
 }
 
 function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: string }) {
@@ -1994,71 +2032,22 @@ function showWorktreeExistsPrompt(
   );
   modal.add(new TextRenderable(renderer, { content: "" }));
 
-  // Button row
-  const buttonRow = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 2,
-    backgroundColor: Theme.transparent,
-  });
-
-  // Track which button is selected
-  let selectedButton: "cancel" | "recreate" = "cancel";
-
-  // Create button renderables
-  const cancelButton = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    backgroundColor: Theme.selected,
-    paddingLeft: 2,
-    paddingRight: 2,
-    border: true,
-    borderColor: Theme.accent,
-    borderStyle: "rounded",
-  });
-  cancelButton.add(new TextRenderable(renderer, { content: "Cancel", fg: Theme.textBright }));
-
-  const recreateButton = new BoxRenderable(renderer, {
-    flexDirection: "row",
-    backgroundColor: Theme.transparent,
-    paddingLeft: 2,
-    paddingRight: 2,
-    border: true,
-    borderColor: Theme.muted,
-    borderStyle: "rounded",
-  });
-  recreateButton.add(new TextRenderable(renderer, { content: "Recreate", fg: Theme.text }));
-
-  buttonRow.add(cancelButton);
-  buttonRow.add(recreateButton);
-  modal.add(buttonRow);
-
-  // Function to update button styles
-  const updateButtons = () => {
-    if (selectedButton === "cancel") {
-      cancelButton.backgroundColor = Theme.selected;
-      cancelButton.borderColor = Theme.accent;
-      (cancelButton.getChildren()[0] as TextRenderable).fg = Theme.textBright;
-      recreateButton.backgroundColor = Theme.transparent;
-      recreateButton.borderColor = Theme.muted;
-      (recreateButton.getChildren()[0] as TextRenderable).fg = Theme.text;
-    } else {
-      cancelButton.backgroundColor = Theme.transparent;
-      cancelButton.borderColor = Theme.muted;
-      (cancelButton.getChildren()[0] as TextRenderable).fg = Theme.text;
-      recreateButton.backgroundColor = Theme.warning;
-      recreateButton.borderColor = Theme.warning;
-      (recreateButton.getChildren()[0] as TextRenderable).fg = Theme.textBright;
-    }
-  };
+  // Button group
+  let selectedIndex = 0;
+  const buttonGroup = createButtonGroup(renderer, [
+    { label: "Cancel" },
+    { label: "Recreate", selectedBg: Theme.warning, selectedBorder: Theme.warning },
+  ]);
+  modal.add(buttonGroup.container);
 
   // Key handler
   const keyHandler = (key: { name?: string }) => {
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
-      selectedButton = selectedButton === "cancel" ? "recreate" : "cancel";
-      updateButtons();
+      selectedIndex = selectedIndex === 0 ? 1 : 0;
+      buttonGroup.updateSelection(selectedIndex);
     } else if (key.name === "return" || key.name === "enter") {
       renderer.keyInput.off("keypress", keyHandler);
-      if (selectedButton === "recreate") {
+      if (selectedIndex === 1) {
         try {
           git.removeWorktree(branchName);
           git.createWorktree(branchName);
@@ -2339,290 +2328,51 @@ function showSwitchWithContextPrompt(
 }
 
 function launchOpenCode(renderer: CliRenderer, path: string, prompt?: string) {
-  const { execSync } = require("child_process");
-
-  // Destroy renderer first
-  renderer.destroy();
-
-  // Change directory
-  process.chdir(path);
-
   // Build command
   const model = "anthropic/claude-opus-4-5";
   let cmd = `opencode -m ${model}`;
   
   // Add prompt if provided
   if (prompt) {
-    // Escape the prompt for shell and pass via --prompt flag
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const escapedPrompt = terminal.escapePath(prompt);
     cmd += ` --prompt '${escapedPrompt}'`;
   }
 
-  try {
-    execSync(cmd, { stdio: "inherit", cwd: path });
-  } catch {
-    // OpenCode exited
-  }
-  process.exit(0);
+  terminal.runInPlace(path, cmd, () => renderer.destroy());
 }
 
 // Launch opencode in a new terminal window (doesn't take over current window)
 function launchOpenCodeInNewWindow(_renderer: CliRenderer, path: string, prompt?: string) {
-  const { spawn, execSync } = require("child_process");
-  const os = require("os");
-
-  const platform = os.platform();
-  const escapedPath = path.replace(/'/g, "'\\''");
-  
   // Build opencode command
   const model = "anthropic/claude-opus-4-5";
   let opencodeCmd = `opencode -m ${model}`;
   if (prompt) {
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const escapedPrompt = terminal.escapePath(prompt);
     opencodeCmd += ` --prompt '${escapedPrompt}'`;
   }
 
-  // Helper to check if command exists
-  const hasCommand = (cmd: string): boolean => {
-    try {
-      execSync(`which ${cmd}`, { stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Helper to spawn detached process
-  const spawnDetached = (cmd: string, args: string[]) => {
-    const child = spawn(cmd, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  };
-
-  if (platform === "darwin") {
-    const termProgram = process.env.TERM_PROGRAM;
-    
-    if (termProgram === "iTerm.app") {
-      const script = `
-        tell application "iTerm"
-          create window with default profile
-          tell current session of current window
-            write text "cd '${escapedPath}' && ${opencodeCmd}"
-          end tell
-        end tell
-      `;
-      spawnDetached("osascript", ["-e", script]);
-    } else if (termProgram === "ghostty") {
-      spawnDetached("ghostty", [`--working-directory=${path}`, "-e", "sh", "-c", `cd '${escapedPath}' && ${opencodeCmd}`]);
-    } else {
-      const script = `
-        tell application "Terminal"
-          do script "cd '${escapedPath}' && ${opencodeCmd}"
-          activate
-        end tell
-      `;
-      spawnDetached("osascript", ["-e", script]);
-    }
-  } else if (platform === "linux") {
-    if (hasCommand("ghostty")) {
-      spawnDetached("ghostty", [`--working-directory=${path}`, "-e", "sh", "-c", `${opencodeCmd}`]);
-    } else if (hasCommand("gnome-terminal")) {
-      spawnDetached("gnome-terminal", [`--working-directory=${path}`, "--", "sh", "-c", `${opencodeCmd}`]);
-    } else if (hasCommand("konsole")) {
-      spawnDetached("konsole", ["--workdir", path, "-e", "sh", "-c", `${opencodeCmd}`]);
-    } else if (hasCommand("alacritty")) {
-      spawnDetached("alacritty", ["--working-directory", path, "-e", "sh", "-c", `${opencodeCmd}`]);
-    } else if (hasCommand("kitty")) {
-      spawnDetached("kitty", ["--directory", path, "sh", "-c", `${opencodeCmd}`]);
-    } else if (hasCommand("xterm")) {
-      spawnDetached("xterm", ["-e", `cd '${escapedPath}' && ${opencodeCmd}`]);
-    }
-  }
-  
+  terminal.openTerminalWindow({ path, command: opencodeCmd });
   // Stay on current view
 }
 
 // Launch nvim in place (takes over current window)
 function launchNvimInPlace(renderer: CliRenderer, path: string) {
-  const { execSync } = require("child_process");
-
-  // Destroy renderer first
-  renderer.destroy();
-
-  // Change directory
-  process.chdir(path);
-
-  try {
-    execSync("nvim .", { stdio: "inherit", cwd: path });
-  } catch {
-    // nvim exited
-  }
-  process.exit(0);
+  terminal.runInPlace(path, "nvim .", () => renderer.destroy());
 }
 
 // Launch shell in place (takes over current window)
 function launchShellInPlace(renderer: CliRenderer, path: string) {
-  const { execSync } = require("child_process");
-
-  // Destroy renderer first
-  renderer.destroy();
-
-  // Change directory
-  process.chdir(path);
-
-  // Get user's shell
-  const shell = process.env.SHELL || "/bin/bash";
-
-  try {
-    execSync(shell, { stdio: "inherit", cwd: path });
-  } catch {
-    // shell exited
-  }
-  process.exit(0);
+  terminal.openShellInPlace(path, () => renderer.destroy());
 }
 
 // Launch nvim in a new terminal window (doesn't take over current window)
 function launchNvim(_renderer: CliRenderer, path: string) {
-  const { spawn, execSync } = require("child_process");
-  const os = require("os");
-
-  const platform = os.platform();
-  const escapedPath = path.replace(/'/g, "'\\''");
-
-  // Helper to check if command exists
-  const hasCommand = (cmd: string): boolean => {
-    try {
-      execSync(`which ${cmd}`, { stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Helper to spawn detached process
-  const spawnDetached = (cmd: string, args: string[]) => {
-    const child = spawn(cmd, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  };
-
-  if (platform === "darwin") {
-    // macOS - detect terminal app
-    const termProgram = process.env.TERM_PROGRAM;
-    
-    if (termProgram === "iTerm.app") {
-      const script = `
-        tell application "iTerm"
-          create window with default profile
-          tell current session of current window
-            write text "cd '${escapedPath}' && nvim ."
-          end tell
-        end tell
-      `;
-      spawnDetached("osascript", ["-e", script]);
-    } else if (termProgram === "ghostty") {
-      spawnDetached("ghostty", [`--working-directory=${path}`, "-e", "nvim", "."]);
-    } else {
-      // Default: Apple Terminal
-      const script = `
-        tell application "Terminal"
-          do script "cd '${escapedPath}' && nvim ."
-          activate
-        end tell
-      `;
-      spawnDetached("osascript", ["-e", script]);
-    }
-  } else if (platform === "linux") {
-    // Linux - prefer ghostty directly (xdg-terminal-exec with --gtk-single-instance may not pass working-directory)
-    if (hasCommand("ghostty")) {
-      spawnDetached("ghostty", [`--working-directory=${path}`, "-e", "nvim", "."]);
-    } else if (hasCommand("gnome-terminal")) {
-      spawnDetached("gnome-terminal", [`--working-directory=${path}`, "--", "nvim", "."]);
-    } else if (hasCommand("konsole")) {
-      spawnDetached("konsole", ["--workdir", path, "-e", "nvim", "."]);
-    } else if (hasCommand("alacritty")) {
-      spawnDetached("alacritty", ["--working-directory", path, "-e", "nvim", "."]);
-    } else if (hasCommand("kitty")) {
-      spawnDetached("kitty", ["--directory", path, "nvim", "."]);
-    } else if (hasCommand("xterm")) {
-      spawnDetached("xterm", ["-e", `cd '${escapedPath}' && nvim .`]);
-    } else {
-      console.error("No supported terminal emulator found");
-    }
-  }
-  
+  terminal.openTerminalWindow({ path, command: "nvim ." });
   // Stay on current view - don't navigate away
 }
 
 function launchTerminal(_renderer: CliRenderer, path: string) {
-  const { spawn, execSync } = require("child_process");
-  const os = require("os");
-
-  const platform = os.platform();
-  const escapedPath = path.replace(/'/g, "'\\''");
-
-  // Helper to check if command exists
-  const hasCommand = (cmd: string): boolean => {
-    try {
-      execSync(`which ${cmd}`, { stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Helper to spawn detached process
-  const spawnDetached = (cmd: string, args: string[]) => {
-    const child = spawn(cmd, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  };
-
-  if (platform === "darwin") {
-    // macOS - detect terminal app
-    const termProgram = process.env.TERM_PROGRAM;
-    
-    if (termProgram === "iTerm.app") {
-      const script = `
-        tell application "iTerm"
-          create window with default profile
-          tell current session of current window
-            write text "cd '${escapedPath}'"
-          end tell
-        end tell
-      `;
-      spawnDetached("osascript", ["-e", script]);
-    } else if (termProgram === "ghostty") {
-      spawnDetached("ghostty", [`--working-directory=${path}`]);
-    } else {
-      // Default: Apple Terminal
-      spawnDetached("open", ["-a", "Terminal", path]);
-    }
-  } else if (platform === "linux") {
-    // Linux - prefer ghostty directly (xdg-terminal-exec with --gtk-single-instance may not pass working-directory)
-    if (hasCommand("ghostty")) {
-      spawnDetached("ghostty", [`--working-directory=${path}`]);
-    } else if (hasCommand("gnome-terminal")) {
-      spawnDetached("gnome-terminal", [`--working-directory=${path}`]);
-    } else if (hasCommand("konsole")) {
-      spawnDetached("konsole", ["--workdir", path]);
-    } else if (hasCommand("alacritty")) {
-      spawnDetached("alacritty", ["--working-directory", path]);
-    } else if (hasCommand("kitty")) {
-      spawnDetached("kitty", ["--directory", path]);
-    } else if (hasCommand("xterm")) {
-      spawnDetached("xterm", ["-e", `cd '${escapedPath}' && $SHELL`]);
-    } else {
-      console.error("No supported terminal emulator found");
-    }
-  }
-  
+  terminal.openTerminalWindow({ path });
   // Stay on current view - don't navigate away
 }
 
