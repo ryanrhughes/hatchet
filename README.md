@@ -71,6 +71,21 @@ alias ht="bun ~/path/to/hatchet/src/main.ts"
 - Copies environment files (`.env.local`, `config/master.key`, etc.)
 - Fizzy integration for task management (via [fizzy-cli](https://github.com/robzolkos/fizzy-cli))
 
+## Keybinds
+
+From the main screen, use these shortcuts to quickly launch tools in the selected worktree's folder:
+
+| Key | Action |
+|-----|--------|
+| `o` | Open OpenCode |
+| `t` | Open shell here |
+| `n` | Open NeoVim |
+| `Shift + o` | Open OpenCode in a new terminal |
+| `Shift + t` | Open new terminal window |
+| `Shift + n` | Open NeoVim in a new window |
+
+**Tip:** Combine shortcuts for a multi-tool workflow. For example, `Shift + n` followed by `o` opens NeoVim in a new window and OpenCode in the current terminal, giving you both in the same context.
+
 ### Deleting Worktrees
 
 ![Delete Worktree](screenshots/delete-worktree.gif)
@@ -85,7 +100,7 @@ Once configured, Hatchet can:
 - Change worktrees for easy context switching
 - Seed Opencode sessions with Fizzy card details
 
-> **Pro tip:** Set your `board` in your project's `.fizzy.yaml` to skip board selection.
+**Tip:** Set your `board` in your project's `.fizzy.yaml` to skip board selection.
 
 ### Create Worktrees from Fizzy Cards
 With `fizzy-cli`, you're able to create worktrees directly from cards in Fizzy without leaving Hatchet.
