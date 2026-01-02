@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  aur-publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Generate PKGBUILD
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+
+          # Download source tarball and calculate checksum
+          curl -sL "https://github.com/ryanrhughes/hatchet/archive/v${VERSION}.tar.gz" -o source.tar.gz
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+
+          # Generate PKGBUILD
+          cat > PKGBUILD << EOF
+          # Maintainer: Ryan Hughes <ryan@ryanrhughes.com>
+          pkgname=hatchet
+          pkgver=${VERSION}
+          pkgrel=1
+          pkgdesc="A TUI for managing work via Fizzy and Git worktrees with automatic database cloning for Rails projects"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/ryanrhughes/hatchet"
+          license=('MIT')
+          depends=('fizzy-cli')
+          makedepends=('bun-bin')
+          options=('!debug' '!strip')
+          source=("\$pkgname-\$pkgver.tar.gz::https://github.com/ryanrhughes/hatchet/archive/v\$pkgver.tar.gz")
+          sha256sums=('${SHA256}')
+
+          build() {
+              cd "\$pkgname-\$pkgver"
+              bun install --frozen-lockfile
+              bun build src/main.ts --compile --outfile dist/hatchet
+          }
+
+          package() {
+              cd "\$pkgname-\$pkgver"
+              install -Dm755 dist/hatchet "\$pkgdir/usr/bin/hatchet"
+              install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE"
+          }
+          EOF
+
+          # Remove leading whitespace (10 spaces from heredoc indentation)
+          sed -i 's/^          //' PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: hatchet
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
