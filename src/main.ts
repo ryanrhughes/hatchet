@@ -1352,13 +1352,20 @@ function showCreateWorktree(renderer: CliRenderer) {
     const branchName = input.value.trim();
     if (branchName) {
       try {
-        git.createWorktree(branchName);
+        const result = git.createWorktree(branchName);
         // Track the sanitized branch name so we can select it in main view
-        lastCreatedBranch = branchName
-          .toLowerCase()
-          .replace(/\s+/g, "-")
-          .replace(/[^a-z0-9\-_/.]/g, "")
-          .replace(/^[-.]+|[-.]+$/g, "");
+        lastCreatedBranch = result.branch;
+        // Log post-hook results for debugging
+        if (result.projectInfo.hasDatabases || result.copiedFiles.length > 0) {
+          console.log(`Project type: ${result.projectInfo.type}`);
+          console.log(`Post-hooks: ${result.postHooks.message}`);
+          if (result.postHooks.details) {
+            console.log(result.postHooks.details);
+          }
+          if (result.copiedFiles.length > 0) {
+            console.log(`Copied files: ${result.copiedFiles.join(", ")}`);
+          }
+        }
         transitionToView(() => showMainView(renderer));
       } catch (error) {
         // Show error - for now just go back
@@ -2066,8 +2073,12 @@ function createWorktreeFromCard(renderer: CliRenderer, card: { number: number; t
     
     // Create new worktree and return to main view
     // Track the branch so we can select it in the main view
-    git.createWorktree(branchName);
-    lastCreatedBranch = branchName;
+    const result = git.createWorktree(branchName);
+    lastCreatedBranch = result.branch;
+    // Log post-hook results
+    if (result.projectInfo.hasDatabases) {
+      console.log(`Project: ${result.projectInfo.type}, hooks: ${result.postHooks.message}`);
+    }
     showMainView(renderer);
   } catch (error) {
     // Show error - for now just go back
@@ -2155,7 +2166,10 @@ function showWorktreeExistsPrompt(
       if (selectedIndex === 1) {
         try {
           git.removeWorktree(branchName);
-          git.createWorktree(branchName);
+          const result = git.createWorktree(branchName);
+          if (result.projectInfo.hasDatabases) {
+            console.log(`Recreated with hooks: ${result.postHooks.message}`);
+          }
         } catch {
           // Ignore errors
         }

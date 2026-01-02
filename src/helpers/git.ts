@@ -2,6 +2,13 @@ import { execSync, spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import type { Worktree } from "../types";
+import { 
+  detectProjectType, 
+  runPostWorktreeHooks, 
+  copyWorktreeFiles,
+  type PostWorktreeResult,
+  type ProjectInfo,
+} from "./project";
 
 let cachedRepoRoot: string | null = null;
 let cachedWorktrees: Worktree[] | null = null;
@@ -112,7 +119,15 @@ export function sanitizeBranch(name: string): string {
     .replace(/^[-.]+|[-.]+$/g, "");
 }
 
-export function createWorktree(branch: string): string {
+export interface CreateWorktreeResult {
+  path: string;
+  branch: string;
+  projectInfo: ProjectInfo;
+  postHooks: PostWorktreeResult;
+  copiedFiles: string[];
+}
+
+export function createWorktree(branch: string): CreateWorktreeResult {
   clearCache();
 
   const sanitized = sanitizeBranch(branch);
@@ -157,7 +172,28 @@ export function createWorktree(branch: string): string {
   }
 
   clearCache();
-  return worktreeDir;
+
+  // Detect project type and run post-worktree hooks
+  const projectInfo = detectProjectType(root);
+  
+  // Copy shared files (env, keys, etc.)
+  const copiedFiles = copyWorktreeFiles(root, worktreeDir);
+  
+  // Run project-specific hooks (e.g., database cloning for Rails)
+  const postHooks = runPostWorktreeHooks(root, worktreeDir);
+
+  return {
+    path: worktreeDir,
+    branch: sanitized,
+    projectInfo,
+    postHooks,
+    copiedFiles,
+  };
+}
+
+/** Simple version that just returns the path (for backward compatibility) */
+export function createWorktreeSimple(branch: string): string {
+  return createWorktree(branch).path;
 }
 
 export function removeWorktree(branch: string, deleteBranch = false): void {
