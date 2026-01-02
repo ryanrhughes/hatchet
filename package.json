@@ -7,15 +7,13 @@
     "hatchet": "./src/main.ts"
   },
   "scripts": {
-    "build": "bun build src/main.ts --outdir dist --target bun",
     "dev": "bun --watch src/main.ts",
-    "start": "bun dist/main.js",
     "hatchet": "bun src/main.ts",
-    "typecheck": "tsc --noEmit",
-    "link": "ln -sf $(pwd)/src/main.ts ~/.local/bin/hatchet && chmod +x src/main.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opentui/core": "^0.1.13"
+    "@opentui/core": "^0.1.13",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@types/bun": "latest",
