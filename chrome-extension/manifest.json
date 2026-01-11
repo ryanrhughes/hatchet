@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hatchet for Fizzy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Open Fizzy cards in Hatchet with one click - creates git worktrees and launches OpenCode",
   "permissions": [
     "storage",

@@ -77,14 +77,14 @@ From the main screen, use these shortcuts to quickly launch tools in the selecte
 
 | Key | Action |
 |-----|--------|
-| `o` | Open OpenCode |
+| `c` | Open OpenCode |
 | `t` | Open shell here |
 | `n` | Open NeoVim |
-| `Shift + o` | Open OpenCode in a new terminal |
+| `Shift + c` | Open OpenCode in a new terminal |
 | `Shift + t` | Open new terminal window |
 | `Shift + n` | Open NeoVim in a new window |
 
-**Tip:** Combine shortcuts for a multi-tool workflow. For example, `Shift + n` followed by `o` opens NeoVim in a new window and OpenCode in the current terminal, giving you both in the same context.
+**Tip:** Combine shortcuts for a multi-tool workflow. For example, `Shift + n` followed by `c` opens NeoVim in a new window and OpenCode in the current terminal, giving you both in the same context.
 
 ### Deleting Worktrees
 
@@ -118,6 +118,40 @@ When a worktree is created from Fizzy, you'll be given the option to include the
 ![Fizzy Context Option](screenshots/fizzy-context-option.png)
 
 ![OpenCode Prompt](screenshots/opencode.png)
+
+## Browser Extension
+
+The Hatchet Chrome extension adds an "Open in Hatchet" button to Fizzy, allowing you to create or switch to a worktree directly from your browser.
+
+![Extension Button](screenshots/extension-button.png)
+
+### Installation
+
+1. Install the protocol handler:
+   ```bash
+   hatchet --install-handler
+   ```
+
+2. Install the Chrome extension:
+   - Open `chrome://extensions`
+   - Enable **Developer mode**
+   - Click **Load unpacked**
+   - Select `/usr/share/hatchet/chrome-extension` (or `chrome-extension/` if running from source)
+
+### Configuration
+
+The first time you click the Hatchet button on a board, you'll be prompted to enter the project path. This maps the Fizzy board to your local git repository.
+
+You can also manage board-to-path mappings in the extension popup:
+
+![Extension Directory Paths](screenshots/extension-dir-paths.png)
+
+### How It Works
+
+1. Click the Hatchet button on any Fizzy card
+2. A terminal opens and creates/switches to a worktree for that card
+3. OpenCode launches with the card context pre-loaded
+4. When you exit, you're dropped into a bash shell in the worktree
 
 ## Rails Database Cloning
 
@@ -215,6 +249,8 @@ Project config takes precedence over global config.
   // Skip copying SQLite databases when creating worktrees
   "skipDatabaseCopy": false,
   // Skip copying environment files (.env.local, master.key, etc.)
-  "skipEnvCopy": false
+  "skipEnvCopy": false,
+  // Default model to launch with Opencode
+  "opencodeModel": "opencode/gpt-5.1-codex"
 }
 ```

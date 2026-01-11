@@ -27,6 +27,7 @@ import {
 import * as terminal from "./helpers/terminal";
 import { parseArgs, type CliOptions } from "./helpers/cli";
 import { loadConfig } from "./helpers/config";
+import { installProtocolHandler } from "./helpers/protocol-handler";
 import { execSync } from "child_process";
 
 // Helper to clear all children from a renderable (no removeAll() in OpenTUI)
@@ -590,6 +591,12 @@ function processCardDirect(cardNumber: number, options: { launchOpencode?: boole
 async function main() {
   // Parse CLI arguments first
   const options = await parseArgs();
+
+  // Handle --install-handler: install protocol handler and exit
+  if (options.installHandler) {
+    installProtocolHandler();
+    process.exit(0);
+  }
 
   // Handle --path: change to specified directory
   if (options.path) {
@@ -1156,7 +1163,7 @@ function showMainView(renderer: CliRenderer) {
     footer.add(hint);
   };
 
-  addKeybind("o", "opencode");
+  addKeybind("c", "opencode");
   addKeybind("n", "nvim");
   addKeybind("t", "terminal");
   addKeybind("d", "delete");
@@ -1281,7 +1288,7 @@ function showMainView(renderer: CliRenderer) {
       selectCurrent();
     }
     // Launch tools
-    else if (key.name === "o" || key.name === "O") {
+    else if (key.name === "c" || key.name === "C") {
       launchWithTool("opencode", newWindow);
     } else if (key.name === "n" || key.name === "N") {
       launchWithTool("nvim", newWindow);
@@ -2547,7 +2554,7 @@ function showSwitchWithContextPrompt(
     } else if (key.name === "escape") {
       renderer.keyInput.off("keypress", keyHandler);
       transitionToView(() => showMainView(renderer));
-    } else if (key.name === "o" || key.name === "O") {
+    } else if (key.name === "c" || key.name === "C") {
       const prompt = getIncludeContext() ? fizzy.generateInitialPrompt(card, cardNumber) : undefined;
       if (keyNewWindow) {
         launchOpenCodeInNewWindow(renderer, worktreePath, prompt);

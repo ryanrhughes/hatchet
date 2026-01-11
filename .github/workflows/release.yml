@@ -28,6 +28,7 @@ jobs:
           pkgver=${VERSION}
           pkgrel=1
           pkgdesc="A TUI for managing work via Fizzy and Git worktrees with automatic database cloning for Rails projects"
+          install=hatchet.install
           arch=('x86_64' 'aarch64')
           url="https://github.com/ryanrhughes/hatchet"
           license=('MIT')
@@ -47,17 +48,49 @@ jobs:
               cd "\$pkgname-\$pkgver"
               install -Dm755 dist/hatchet "\$pkgdir/usr/bin/hatchet"
               install -Dm644 LICENSE "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE"
+              
+              # Install Chrome extension
+              install -d "\$pkgdir/usr/share/hatchet/chrome-extension"
+              cp -r chrome-extension/* "\$pkgdir/usr/share/hatchet/chrome-extension/"
+              
+              # Install scripts
+              install -d "\$pkgdir/usr/share/hatchet/scripts"
+              install -Dm755 scripts/*.sh "\$pkgdir/usr/share/hatchet/scripts/"
           }
           EOF
 
           # Remove leading whitespace (10 spaces from heredoc indentation)
           sed -i 's/^          //' PKGBUILD
 
+          # Generate install file with post-install instructions
+          cat > hatchet.install << 'INSTALLEOF'
+          post_install() {
+              echo ""
+              echo "==> Hatchet installed successfully!"
+              echo ""
+              echo "==> To set up the protocol handler (allows hatchet:// links from browser):"
+              echo "    hatchet --install-handler"
+              echo ""
+              echo "==> To install the Chrome extension:"
+              echo "    1. Open chrome://extensions"
+              echo "    2. Enable Developer mode"
+              echo "    3. Click 'Load unpacked'"
+              echo "    4. Select: /usr/share/hatchet/chrome-extension"
+              echo ""
+          }
+
+          post_upgrade() {
+              post_install
+          }
+          INSTALLEOF
+          sed -i 's/^          //' hatchet.install
+
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: hatchet
           pkgbuild: ./PKGBUILD
+          assets: ./hatchet.install
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

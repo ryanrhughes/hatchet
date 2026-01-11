@@ -14,9 +14,11 @@ This document contains important patterns and conventions for developing the `ha
 - `src/helpers/card-tile.ts` - Fizzy card tile component
 - `src/helpers/config.ts` - Configuration file loading
 - `src/helpers/cli.ts` - CLI argument parsing (yargs)
+- `src/helpers/protocol-handler.ts` - Protocol handler installation logic
 - `src/theme.ts` - Color theming system
 - `src/types.ts` - TypeScript type definitions
-- `scripts/install-protocol-handler.sh` - Protocol handler installer (Linux)
+- `scripts/install-protocol-handler.sh` - Protocol handler installer (bash, legacy)
+- `chrome-extension/` - Chrome extension for Fizzy integration
 
 ## OpenTUI Key Event Handling
 
@@ -138,6 +140,7 @@ Options:
   -o, --launch-opencode  Launch OpenCode in the worktree after creation
       --with-context     Include card context in OpenCode prompt (requires -o)
   -l, --list             List worktrees and exit
+      --install-handler  Install hatchet:// protocol handler (Linux)
   -h, --help             Show help
   -v, --version          Show version
 ```
@@ -173,6 +176,10 @@ Hatchet can be registered as a protocol handler for `hatchet://` URLs, allowing 
 ### Installation
 
 ```bash
+# Using CLI (recommended)
+hatchet --install-handler
+
+# Or using script directly (development)
 ./scripts/install-protocol-handler.sh
 ```
 

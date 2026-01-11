@@ -11,6 +11,7 @@ export interface CliOptions {
   withContext?: boolean;
   list?: boolean;
   url?: string;
+  installHandler?: boolean;
 }
 
 /**
@@ -102,6 +103,11 @@ export async function parseArgs(): Promise<CliOptions> {
       describe: "Protocol URL (used by protocol handler)",
       hidden: true, // Don't show in help
     })
+    .option("install-handler", {
+      type: "boolean",
+      describe: "Install hatchet:// protocol handler (Linux)",
+      default: false,
+    })
     .help("help")
     .alias("help", "h")
     .version()
@@ -116,6 +122,7 @@ export async function parseArgs(): Promise<CliOptions> {
     withContext: argv.withContext,
     list: argv.list,
     url: argv.url,
+    installHandler: argv.installHandler,
   };
 
   // If --url was passed, merge parsed URL options (URL options take precedence)
