@@ -269,10 +269,12 @@ Hatchet automatically detects project types and clones databases when creating w
 ### Files Copied Automatically
 
 These files are copied from the main repo to the worktree if they exist:
+- `.env`
 - `.env.local`
 - `.env.development.local`
 - `config/master.key`
 - `config/credentials/development.key`
+- Any files specified in `additionalFilesToCopy` config option
 
 ### Database Module
 
@@ -364,10 +366,12 @@ Project config takes precedence over global config.
 {
   // Skip copying SQLite databases when creating worktrees
   "skipDatabaseCopy": false,
-  // Skip copying environment files (.env.local, master.key, etc.)
+  // Skip copying environment files (.env, .env.local, master.key, etc.)
   "skipEnvCopy": false,
   // Default model to use when launching OpenCode (format: provider/model)
-  "opencodeModel": "opencode/claude-opus-4-5"
+  "opencodeModel": "opencode/claude-opus-4-5",
+  // Additional files to copy when creating worktrees (relative to repo root)
+  "additionalFilesToCopy": ["special_file", "config/custom.yml"]
 }
 ```
 

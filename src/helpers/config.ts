@@ -19,6 +19,8 @@ export interface HatchetConfig {
   skipEnvCopy?: boolean;
   /** Default model to use when launching OpenCode (format: provider/model, e.g., "anthropic/claude-sonnet-4-20250514") */
   opencodeModel?: string;
+  /** Additional files to copy when creating worktrees (relative to repo root) */
+  additionalFilesToCopy?: string[];
 }
 
 const DEFAULT_CONFIG: HatchetConfig = {

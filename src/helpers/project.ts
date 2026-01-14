@@ -174,10 +174,13 @@ export function copyWorktreeFiles(
   
   // Files to copy if they exist (and are gitignored)
   const filesToCopy = [
+    ".env",
     ".env.local",
     ".env.development.local",
     "config/master.key",
     "config/credentials/development.key",
+    // Add any additional files from config
+    ...(config.additionalFilesToCopy ?? []),
   ];
   
   for (const file of filesToCopy) {
