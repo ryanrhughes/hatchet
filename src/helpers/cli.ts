@@ -1,5 +1,4 @@
 // CLI argument parsing for Hatchet
-// Uses yargs following OpenCode's patterns
 
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -7,7 +6,10 @@ import { hideBin } from "yargs/helpers";
 export interface CliOptions {
   card?: number;
   pr?: number;
+  reviewPr?: number;
   path?: string;
+  launchAi?: boolean;
+  /** Deprecated compatibility alias for older URLs/CLI usage. */
   launchOpencode?: boolean;
   withContext?: boolean;
   list?: boolean;
@@ -16,13 +18,16 @@ export interface CliOptions {
 }
 
 /**
- * Parse protocol URL: hatchet://card/123?path=/foo&launch-opencode=true&with-context=true
- *                  or hatchet://pr/123?path=/foo&launch-opencode=true&with-context=true
+ * Parse protocol URL: hatchet://card/123?path=/foo&launch-ai=true&with-context=true
+ *                  or hatchet://pr/123?path=/foo&launch-ai=true&with-context=true
+ *                  or hatchet://review-pr/123?path=/foo&launch-ai=true&with-context=true
  * 
- * URL structure: hatchet://<type>/123?path=/foo&launch-opencode=true&with-context=true
- * - hostname = "card" or "pr"
+ * URL structure: hatchet://<type>/123?path=/foo&launch-ai=true&with-context=true
+ * - hostname = "card", "pr", or "review-pr"
  * - pathname = "/123"
- * - searchParams = { path: "/foo", "launch-opencode": "true", "with-context": "true" }
+ * - searchParams = { path: "/foo", "launch-ai": "true", "with-context": "true" }
+ *
+ * Older URLs using launch-opencode=true are still accepted.
  */
 export function parseProtocolUrl(url: string): Partial<CliOptions> {
   try {
@@ -43,13 +48,20 @@ export function parseProtocolUrl(url: string): Partial<CliOptions> {
       if (!isNaN(prNum)) {
         options.pr = prNum;
       }
+    } else if (parsed.hostname === "review-pr") {
+      const prPath = parsed.pathname.replace(/^\/+/, "");
+      const prNum = parseInt(prPath, 10);
+      if (!isNaN(prNum)) {
+        options.reviewPr = prNum;
+      }
     }
 
     // Query params - match CLI flag names
     if (parsed.searchParams.has("path")) {
       options.path = parsed.searchParams.get("path")!;
     }
-    if (parsed.searchParams.get("launch-opencode") === "true") {
+    if (parsed.searchParams.get("launch-ai") === "true" || parsed.searchParams.get("launch-opencode") === "true") {
+      options.launchAi = true;
       options.launchOpencode = true;
     }
     if (parsed.searchParams.get("with-context") === "true") {
@@ -77,8 +89,9 @@ export async function parseArgs(): Promise<CliOptions> {
     .usage("  $0                                    Launch TUI")
     .usage("  $0 --card 123 --path /path/to/repo    Create worktree for card #123")
     .usage("  $0 --pr 456                           Create worktree for PR #456")
-    .usage("  $0 -c 123 -o                          Create and launch OpenCode")
-    .usage("  $0 -c 123 -o --with-context           Include card context in prompt")
+    .usage("  $0 --review-pr 456                    Review PR #456 against latest base")
+    .usage("  $0 -c 123 -o                          Create and launch AI harness")
+    .usage("  $0 -c 123 -o --with-context           Include card/PR/review context")
     .usage("  $0 --list                             List all worktrees")
     .option("card", {
       alias: "c",
@@ -89,20 +102,30 @@ export async function parseArgs(): Promise<CliOptions> {
       type: "number",
       describe: "GitHub PR number to create/switch worktree for",
     })
+    .option("review-pr", {
+      type: "number",
+      describe: "GitHub PR number to review against the latest base branch",
+    })
     .option("path", {
       alias: "p",
       type: "string",
       describe: "Path to git repository (required for protocol handler)",
     })
-    .option("launch-opencode", {
+    .option("launch-ai", {
       alias: "o",
       type: "boolean",
-      describe: "Launch OpenCode in the worktree after creation",
+      describe: "Launch the configured AI harness in the worktree after creation",
       default: false,
+    })
+    .option("launch-opencode", {
+      type: "boolean",
+      describe: "Deprecated alias for --launch-ai",
+      default: false,
+      hidden: true,
     })
     .option("with-context", {
       type: "boolean",
-      describe: "Include card context in OpenCode prompt (requires --launch-opencode)",
+      describe: "Include card/PR/review context in the AI prompt (requires --launch-ai)",
       default: false,
     })
     .option("list", {
@@ -128,11 +151,15 @@ export async function parseArgs(): Promise<CliOptions> {
     .strict()
     .parse();
 
+  const launchAi = argv.launchAi || argv.launchOpencode;
+
   let options: CliOptions = {
     card: argv.card,
     pr: argv.pr,
+    reviewPr: argv.reviewPr,
     path: argv.path,
-    launchOpencode: argv.launchOpencode,
+    launchAi,
+    launchOpencode: launchAi,
     withContext: argv.withContext,
     list: argv.list,
     url: argv.url,
@@ -143,6 +170,10 @@ export async function parseArgs(): Promise<CliOptions> {
   if (options.url) {
     const urlOptions = parseProtocolUrl(options.url);
     options = { ...options, ...urlOptions };
+    if (urlOptions.launchAi || urlOptions.launchOpencode) {
+      options.launchAi = true;
+      options.launchOpencode = true;
+    }
   }
 
   return options;

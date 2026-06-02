@@ -1,6 +1,6 @@
 # Hatchet for Fizzy - Chrome Extension
 
-A Chrome extension that adds a Hatchet button to Fizzy card pages, enabling one-click worktree creation and OpenCode launch.
+A Chrome extension that adds a Hatchet button to Fizzy card pages, enabling one-click worktree creation and AI harness launch.
 
 ## Features
 
@@ -44,7 +44,7 @@ Once configured, clicking the Hatchet button will:
 1. Generate a `hatchet://` URL with the card number, project path, and options
 2. Trigger the protocol handler
 3. Hatchet creates/switches to the worktree for that card
-4. Opens OpenCode with the card context pre-loaded
+4. Opens the configured AI harness with the card context pre-loaded
 
 ### Managing Boards
 
@@ -60,14 +60,16 @@ Click the extension icon in Chrome's toolbar to:
 The extension generates URLs in this format:
 
 ```
-hatchet://card/<number>?path=<project-path>&launch-opencode=true&with-context=true
+hatchet://card/<number>?path=<project-path>&launch-ai=true&with-context=true
 ```
 
 Parameters:
 - `card/<number>` - The Fizzy card number
 - `path` - Absolute path to the git repository
-- `launch-opencode=true` - Launch OpenCode after creating the worktree
-- `with-context=true` - Include card details in the OpenCode prompt
+- `launch-ai=true` - Launch the configured AI harness after creating the worktree
+- `with-context=true` - Include card details in the AI prompt
+
+Older `launch-opencode=true` URLs remain supported for compatibility.
 
 ## Development
 

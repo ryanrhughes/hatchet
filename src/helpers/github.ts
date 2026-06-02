@@ -180,7 +180,7 @@ export function parsePRFromBranch(_branchName: string): number | null {
 }
 
 /**
- * Generate an initial prompt for OpenCode with PR context
+ * Generate an initial prompt for the AI harness with PR context
  */
 export function generateInitialPrompt(pr: GitHubPR): string {
   const lines: string[] = [];
@@ -217,6 +217,37 @@ export function generateInitialPrompt(pr: GitHubPR): string {
   lines.push("---");
   lines.push("");
   lines.push("Please acknowledge that you've received these PR details and wait for my instructions on how to proceed.");
+
+  return lines.join("\n");
+}
+
+/**
+ * Generate an AI prompt for a Hatchet PR review worktree.
+ */
+export function generateReviewPrompt(pr: GitHubPR, reviewMarkdown: string): string {
+  const lines: string[] = [];
+
+  lines.push("I'm reviewing a GitHub Pull Request in a Hatchet review worktree.");
+  lines.push("This worktree locally merges the PR head onto the latest fetched base branch, so review the merge result rather than only the stale PR branch.");
+  lines.push("");
+  lines.push(`## PR #${pr.number}: ${pr.title}`);
+  lines.push("");
+  lines.push(`**Author:** ${pr.author}`);
+  lines.push(`**Branch:** ${pr.headRef} → ${pr.baseRef}`);
+  lines.push(`**Status:** ${pr.state}${pr.isDraft ? " (Draft)" : ""}`);
+
+  if (pr.additions !== undefined && pr.deletions !== undefined) {
+    lines.push(`**GitHub diff:** +${pr.additions} / -${pr.deletions} in ${pr.changedFiles} files`);
+  }
+
+  lines.push("");
+  lines.push("## Hatchet review summary");
+  lines.push("");
+  lines.push(reviewMarkdown);
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  lines.push("Please review the merged result for correctness, regressions, test coverage, and issues introduced by the base branch moving since the PR was opened.");
 
   return lines.join("\n");
 }

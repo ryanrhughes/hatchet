@@ -85,7 +85,7 @@
   function buildHatchetUrl(cardNumber, projectPath) {
     const params = new URLSearchParams({
       path: projectPath,
-      'launch-opencode': 'true',
+      'launch-ai': 'true',
       'with-context': 'true'
     });
     return `hatchet://card/${cardNumber}?${params.toString()}`;

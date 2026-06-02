@@ -66,10 +66,11 @@ alias ht="bun ~/path/to/hatchet/src/main.ts"
 ## Features
 
 - Create, switch, and remove Git worktrees
-- Launch multiple tools (Opencode, NeoVim, Terminal) in your worktree
+- Launch multiple tools (configured AI harness via `omarchy-launch-ai`, NeoVim, Terminal) in your worktree
 - Automatic SQLite database cloning for Rails projects
 - Copies environment files (`.env.local`, `config/master.key`, etc.)
 - Fizzy integration for task management (via [fizzy-cli](https://github.com/robzolkos/fizzy-cli))
+- GitHub PR review worktrees that locally merge a PR onto the latest base branch
 
 ## Keybinds
 
@@ -77,14 +78,14 @@ From the main screen, use these shortcuts to quickly launch tools in the selecte
 
 | Key | Action |
 |-----|--------|
-| `c` | Open OpenCode |
+| `c` | Open configured AI harness |
 | `t` | Open shell here |
 | `n` | Open NeoVim |
-| `Shift + c` | Open OpenCode in a new terminal |
+| `Shift + c` | Open configured AI harness in a new terminal |
 | `Shift + t` | Open new terminal window |
 | `Shift + n` | Open NeoVim in a new window |
 
-**Tip:** Combine shortcuts for a multi-tool workflow. For example, `Shift + n` followed by `c` opens NeoVim in a new window and OpenCode in the current terminal, giving you both in the same context.
+**Tip:** Combine shortcuts for a multi-tool workflow. For example, `Shift + n` followed by `c` opens NeoVim in a new window and your AI harness in the current terminal, giving you both in the same context.
 
 ### Deleting Worktrees
 
@@ -98,7 +99,7 @@ Once configured, Hatchet can:
 - Display your Fizzy boards and cards
 - Create worktrees directly from Fizzy cards
 - Change worktrees for easy context switching
-- Seed Opencode sessions with Fizzy card details
+- Seed AI harness sessions with Fizzy card details
 
 **Tip:** Set your `board` in your project's `.fizzy.yaml` to skip board selection.
 
@@ -113,11 +114,32 @@ With `fizzy-cli`, you're able to create worktrees directly from cards in Fizzy w
 
 ### Load Context from Fizzy
 
-When a worktree is created from Fizzy, you'll be given the option to include the contents of the card when launching OpenCode to assist in getting you started even faster!
+When a worktree is created from Fizzy, you'll be given the option to include the contents of the card when launching your configured AI harness to assist in getting you started even faster!
 
 ![Fizzy Context Option](screenshots/fizzy-context-option.png)
 
-![OpenCode Prompt](screenshots/opencode.png)
+![AI Prompt](screenshots/opencode.png)
+
+## GitHub PR Review Mode
+
+Hatchet can create a disposable review worktree for a pull request as it would merge into the latest fetched base branch. This is useful when the PR branch is stale but you want to review the real merge result without updating or pushing the author's branch.
+
+```bash
+# Review PR #456 against latest base
+hatchet --review-pr 456 --path /home/user/myproject
+
+# Review and launch your configured AI harness with the merge summary preloaded
+hatchet --review-pr 456 --path /home/user/myproject --launch-ai --with-context
+```
+
+Review mode creates a local branch/worktree like:
+
+```text
+../myproject.review-pr-456
+hatchet/review-pr-456
+```
+
+It also writes `.hatchet/review.md` in the review worktree with merge status, base-branch advancement, changed-file overlap, conflicts, and useful review commands. In the TUI's Pull Requests list, press `r` on a PR to create this latest-base review worktree.
 
 ## Browser Extension
 
@@ -150,7 +172,7 @@ You can also manage board-to-path mappings in the extension popup:
 
 1. Click the Hatchet button on any Fizzy card
 2. A terminal opens and creates/switches to a worktree for that card
-3. OpenCode launches with the card context pre-loaded
+3. Your configured AI harness launches with the card context pre-loaded
 4. When you exit, you're dropped into a bash shell in the worktree
 
 ## Rails Database Cloning
@@ -250,7 +272,7 @@ Project config takes precedence over global config.
   "skipDatabaseCopy": false,
   // Skip copying environment files (.env.local, master.key, etc.)
   "skipEnvCopy": false,
-  // Default model to launch with Opencode
-  "opencodeModel": "opencode/gpt-5.1-codex"
+  // Additional files to copy when creating worktrees
+  "additionalFilesToCopy": ["special_file", "config/custom.yml"]
 }
 ```

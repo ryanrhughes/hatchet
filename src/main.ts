@@ -27,10 +27,9 @@ import {
   type ImageInfo 
 } from "./helpers/image";
 import * as terminal from "./helpers/terminal";
-import { parseArgs, type CliOptions } from "./helpers/cli";
-import { loadConfig } from "./helpers/config";
+import { parseArgs } from "./helpers/cli";
 import { installProtocolHandler } from "./helpers/protocol-handler";
-import { execSync } from "child_process";
+import * as fs from "fs";
 
 // Helper to clear all children from a renderable (no removeAll() in OpenTUI)
 function clearChildren(parent: Renderable): void {
@@ -520,11 +519,30 @@ function listWorktreesCli(): void {
   }
 }
 
+interface DirectLaunchOptions {
+  launchAi?: boolean;
+  withContext?: boolean;
+}
+
+function launchAICli(worktreePath: string, prompt?: string): void {
+  const args = ["--path", worktreePath];
+  if (prompt) {
+    args.push("--prompt", prompt);
+  }
+
+  const { spawnSync } = require("child_process");
+  const result = spawnSync("omarchy-launch-ai", args, { stdio: "inherit" });
+  if (result.error) {
+    console.error(`Error: Could not launch AI harness with omarchy-launch-ai: ${result.error.message}`);
+    process.exit(1);
+  }
+}
+
 /**
  * Process a Fizzy card directly (non-interactive)
- * Creates/switches to worktree and optionally launches OpenCode
+ * Creates/switches to worktree and optionally launches the configured AI harness
  */
-function processCardDirect(cardNumber: number, options: { launchOpencode?: boolean; withContext?: boolean }): void {
+function processCardDirect(cardNumber: number, options: DirectLaunchOptions): void {
   // Check Fizzy auth
   if (!fizzy.isAuthenticated()) {
     console.error("Error: Not authenticated with Fizzy. Run 'fizzy auth login' first.");
@@ -561,39 +579,18 @@ function processCardDirect(cardNumber: number, options: { launchOpencode?: boole
     }
   }
 
-  // Launch OpenCode if requested
-  if (options.launchOpencode) {
-    // Load config to check for default model
-    const repoRoot = git.repoRoot();
-    const config = loadConfig(repoRoot);
-    
-    // Build opencode args
-    const opencodeArgs: string[] = [];
-    
-    // Add model if configured
-    if (config.opencodeModel) {
-      opencodeArgs.push("--model", config.opencodeModel);
-    }
-    
-    // Add prompt if context requested
-    if (options.withContext) {
-      const prompt = fizzy.generateInitialPrompt(card, cardNumber);
-      opencodeArgs.push("--prompt", prompt);
-    }
-    
-    // Change to worktree dir and launch opencode
-    process.chdir(worktreePath);
-    
-    const { spawnSync } = require("child_process");
-    spawnSync("opencode", opencodeArgs, { stdio: "inherit" });
+  // Launch configured AI harness if requested
+  if (options.launchAi) {
+    const prompt = options.withContext ? fizzy.generateInitialPrompt(card, cardNumber) : undefined;
+    launchAICli(worktreePath, prompt);
   }
 }
 
 /**
  * Process a GitHub PR directly (non-interactive)
- * Creates/switches to worktree and optionally launches OpenCode
+ * Creates/switches to worktree and optionally launches the configured AI harness
  */
-function processPRDirect(prNumber: number, options: { launchOpencode?: boolean; withContext?: boolean }): void {
+function processPRDirect(prNumber: number, options: DirectLaunchOptions): void {
   // Check GitHub auth
   if (!github.isAuthenticated()) {
     console.error("Error: Not authenticated with GitHub CLI. Run 'gh auth login' first.");
@@ -607,22 +604,19 @@ function processPRDirect(prNumber: number, options: { launchOpencode?: boolean; 
     process.exit(1);
   }
 
-  // Get branch name from PR
-  const branchName = github.branchFromPR(pr);
+  const branchName = git.prBranchName(prNumber);
+  const legacyBranchName = github.branchFromPR(pr);
   let worktreePath: string;
 
-  // Check if worktree exists
-  if (git.worktreeExists(branchName)) {
-    worktreePath = git.worktreePath(branchName)!;
+  // Check if a Hatchet PR worktree already exists. Also recognize legacy PR
+  // worktrees that used the PR head branch directly.
+  const existingPath = git.worktreePath(branchName) ?? git.worktreePath(legacyBranchName);
+  if (existingPath) {
+    worktreePath = existingPath;
     console.log(`Worktree already exists: ${worktreePath}`);
   } else {
-    // Fetch the branch first to ensure it's available
-    console.log(`Fetching branch ${branchName}...`);
-    git.fetchBranch(branchName);
-    
-    // Create worktree
     console.log(`Creating worktree for PR #${prNumber}: ${pr.title}`);
-    const result = git.createWorktree(branchName, { prNumber });
+    const result = git.createPRWorktree(prNumber, { headRef: pr.headRef });
     worktreePath = result.path;
     console.log(`Created: ${worktreePath}`);
 
@@ -634,31 +628,61 @@ function processPRDirect(prNumber: number, options: { launchOpencode?: boolean; 
     }
   }
 
-  // Launch OpenCode if requested
-  if (options.launchOpencode) {
-    // Load config to check for default model
-    const repoRoot = git.repoRoot();
-    const config = loadConfig(repoRoot);
-    
-    // Build opencode args
-    const opencodeArgs: string[] = [];
-    
-    // Add model if configured
-    if (config.opencodeModel) {
-      opencodeArgs.push("--model", config.opencodeModel);
-    }
-    
-    // Add prompt if context requested
-    if (options.withContext) {
-      const prompt = github.generateInitialPrompt(pr);
-      opencodeArgs.push("--prompt", prompt);
-    }
-    
-    // Change to worktree dir and launch opencode
-    process.chdir(worktreePath);
-    
-    const { spawnSync } = require("child_process");
-    spawnSync("opencode", opencodeArgs, { stdio: "inherit" });
+  // Launch configured AI harness if requested
+  if (options.launchAi) {
+    const prompt = options.withContext ? github.generateInitialPrompt(pr) : undefined;
+    launchAICli(worktreePath, prompt);
+  }
+}
+
+/**
+ * Process a GitHub PR review directly (non-interactive).
+ * Creates a disposable local merge-result worktree from the latest base branch.
+ */
+function processPRReviewDirect(prNumber: number, options: DirectLaunchOptions): void {
+  if (!github.isAuthenticated()) {
+    console.error("Error: Not authenticated with GitHub CLI. Run 'gh auth login' first.");
+    process.exit(1);
+  }
+
+  const pr = github.fetchPR(prNumber);
+  if (!pr) {
+    console.error(`Error: PR #${prNumber} not found.`);
+    process.exit(1);
+  }
+
+  console.log(`Creating review worktree for PR #${prNumber}: ${pr.title}`);
+  console.log(`Base: ${pr.baseRef} (latest fetched)  Head: ${pr.headRef}`);
+
+  let result: git.PRReviewWorktreeResult;
+  try {
+    result = git.createPRReviewWorktree(prNumber, {
+      baseRef: pr.baseRef,
+      title: pr.title,
+      recreateExisting: true,
+    });
+  } catch (error) {
+    console.error(`Error: Could not create review worktree: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+
+  console.log(`Created: ${result.path}`);
+  console.log(`Review notes: ${result.reviewMarkdownPath}`);
+  console.log(`Merge: ${result.mergeStatus === "clean" ? "clean" : "conflicts"}`);
+  console.log(`Base advanced by ${result.baseAdvancedCommitCount} commit(s); changed-file overlap: ${result.overlappingFiles.length}`);
+  if (result.conflictFiles.length > 0) {
+    console.log(`Conflicts: ${result.conflictFiles.join(", ")}`);
+  }
+  if (result.projectInfo.hasDatabases) {
+    console.log(`  ${result.postHooks.message}`);
+  }
+  if (result.copiedFiles.length > 0) {
+    console.log(`  Copied: ${result.copiedFiles.join(", ")}`);
+  }
+
+  if (options.launchAi) {
+    const prompt = options.withContext ? github.generateReviewPrompt(pr, result.reviewMarkdown) : undefined;
+    launchAICli(result.path, prompt);
   }
 }
 
@@ -704,7 +728,16 @@ async function main() {
   // Non-interactive: process card directly
   if (options.card) {
     processCardDirect(options.card, {
-      launchOpencode: options.launchOpencode,
+      launchAi: options.launchAi,
+      withContext: options.withContext,
+    });
+    process.exit(0);
+  }
+
+  // Non-interactive: review PR against latest base
+  if (options.reviewPr) {
+    processPRReviewDirect(options.reviewPr, {
+      launchAi: options.launchAi,
       withContext: options.withContext,
     });
     process.exit(0);
@@ -713,7 +746,7 @@ async function main() {
   // Non-interactive: process PR directly
   if (options.pr) {
     processPRDirect(options.pr, {
-      launchOpencode: options.launchOpencode,
+      launchAi: options.launchAi,
       withContext: options.withContext,
     });
     process.exit(0);
@@ -1241,6 +1274,14 @@ function showMainView(renderer: CliRenderer) {
         detailContent.add(new TextRenderable(renderer, { content: "" }));
       }
       
+      // Check if it's a Hatchet PR branch
+      const prNumber = git.parsePRFromBranch(wt.branch) ?? git.parseReviewPRFromBranch(wt.branch);
+      if (prNumber) {
+        detailContent.add(new TextRenderable(renderer, { content: "GitHub PR", fg: Theme.muted }));
+        detailContent.add(new TextRenderable(renderer, { content: `#${prNumber}`, fg: Theme.accent }));
+        detailContent.add(new TextRenderable(renderer, { content: "" }));
+      }
+
       // Check if it's a Fizzy card branch
       const cardNumber = fizzy.parseCardFromBranch(wt.branch);
       if (cardNumber) {
@@ -1276,7 +1317,7 @@ function showMainView(renderer: CliRenderer) {
     footer.add(hint);
   };
 
-  addKeybind("c", "opencode");
+  addKeybind("c", "AI");
   addKeybind("n", "nvim");
   addKeybind("t", "terminal");
   addKeybind("d", "delete");
@@ -1347,19 +1388,52 @@ function showMainView(renderer: CliRenderer) {
         transitionToView(() => showGitHubPRs(renderer));
       }
     } else {
-      // It's a worktree - launch opencode
-      launchWithTool("opencode");
+      // It's a worktree - launch configured AI harness
+      launchWithTool("ai");
     }
   };
 
   // Helper to launch with selected worktree
-  const launchWithTool = (tool: "opencode" | "nvim" | "terminal", newWindow: boolean = false) => {
+  const launchWithTool = (tool: "ai" | "nvim" | "terminal", newWindow: boolean = false) => {
     const wt = getSelectedWorktree();
     if (!wt) return;
     
     const worktreePath = wt.path;
     
-    if (tool === "opencode") {
+    if (tool === "ai") {
+      // Check if this is a Hatchet PR review worktree
+      const reviewPRNumber = git.parseReviewPRFromBranch(wt.branch);
+      if (reviewPRNumber) {
+        const pr = github.fetchPR(reviewPRNumber);
+        const reviewPath = `${worktreePath}/.hatchet/review.md`;
+        const reviewMarkdown = fs.existsSync(reviewPath) ? fs.readFileSync(reviewPath, "utf-8") : "";
+        if (pr) {
+          cleanup();
+          showPRSwitchWithContextPrompt(
+            renderer,
+            worktreePath,
+            pr,
+            newWindow,
+            github.generateReviewPrompt(pr, reviewMarkdown),
+            "Review Worktree",
+            "With review context",
+            "Include the latest-base merge summary from .hatchet/review.md"
+          );
+          return;
+        }
+      }
+
+      // Check if this is a Hatchet PR branch worktree
+      const prNumber = git.parsePRFromBranch(wt.branch);
+      if (prNumber) {
+        const pr = github.fetchPR(prNumber);
+        if (pr) {
+          cleanup();
+          showPRSwitchWithContextPrompt(renderer, worktreePath, pr, newWindow, undefined, "PR Worktree");
+          return;
+        }
+      }
+
       // Check if this looks like a Fizzy card branch
       const cardNumber = fizzy.parseCardFromBranch(wt.branch);
       if (cardNumber) {
@@ -1372,10 +1446,10 @@ function showMainView(renderer: CliRenderer) {
       }
       
       if (newWindow) {
-        launchOpenCodeInNewWindow(renderer, worktreePath);
+        launchAIInNewWindow(renderer, worktreePath);
       } else {
         cleanup();
-        launchOpenCode(renderer, worktreePath);
+        launchAI(renderer, worktreePath);
       }
     } else if (tool === "nvim") {
       if (newWindow) {
@@ -1410,7 +1484,7 @@ function showMainView(renderer: CliRenderer) {
     }
     // Launch tools
     else if (key.name === "c" || key.name === "C") {
-      launchWithTool("opencode", newWindow);
+      launchWithTool("ai", newWindow);
     } else if (key.name === "n" || key.name === "N") {
       launchWithTool("nvim", newWindow);
     } else if (key.name === "t" || key.name === "T") {
@@ -2570,6 +2644,8 @@ function showGitHubPRs(renderer: CliRenderer) {
       } else {
         selectCurrentPR();
       }
+    } else if ((key.name === "r" || key.name === "R") && focusedPane === "list") {
+      reviewCurrentPR();
     } else if (focusedPane === "list") {
       if (key.name === "j" || key.name === "down") {
         updateSelection(selectedIndex + 1);
@@ -2704,10 +2780,19 @@ function showGitHubPRs(renderer: CliRenderer) {
   function selectCurrentPR() {
     if (selectedIndex === filteredPRs.length) {
       renderer.keyInput.off("keypress", keyHandler);
-      showMainView(renderer);
+      transitionToView(() => showMainView(renderer));
     } else if (selectedIndex < filteredPRs.length) {
+      const pr = filteredPRs[selectedIndex];
       renderer.keyInput.off("keypress", keyHandler);
-      createWorktreeFromPR(renderer, filteredPRs[selectedIndex]);
+      transitionToView(() => createWorktreeFromPR(renderer, pr));
+    }
+  }
+
+  function reviewCurrentPR() {
+    if (selectedIndex < filteredPRs.length) {
+      const pr = filteredPRs[selectedIndex];
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(() => createReviewWorktreeFromPR(renderer, pr));
     }
   }
 
@@ -2760,7 +2845,7 @@ function showGitHubPRs(renderer: CliRenderer) {
   container.add(new TextRenderable(renderer, { content: "" }));
   container.add(
     new TextRenderable(renderer, {
-      content: "/ filter  j/k navigate  enter select  esc back  tab switch pane",
+      content: "/ filter  j/k navigate  enter branch-worktree  r review-latest-base  esc back  tab switch pane",
       fg: Theme.muted,
     })
   );
@@ -2793,32 +2878,121 @@ function showGitHubPRs(renderer: CliRenderer) {
 
 function createWorktreeFromPR(renderer: CliRenderer, pr: GitHubPR) {
   try {
-    // Get branch name from PR
-    const branchName = github.branchFromPR(pr);
+    const branchName = git.prBranchName(pr.number);
+    const legacyBranchName = github.branchFromPR(pr);
 
-    // Check if worktree already exists
-    if (git.worktreeExists(branchName)) {
-      const existingPath = git.worktreePath(branchName);
-      if (existingPath) {
-        lastCreatedBranch = branchName;
-        showPRWorktreeExistsPrompt(renderer, pr, branchName, existingPath);
-        return;
-      }
+    // Prefer Hatchet's synthetic PR branch, but recognize legacy worktrees that
+    // were created directly from the PR head branch name.
+    const existingPath = git.worktreePath(branchName) ?? git.worktreePath(legacyBranchName);
+    const existingBranch = git.worktreePath(branchName) ? branchName : legacyBranchName;
+    if (existingPath) {
+      lastCreatedBranch = existingBranch;
+      showPRSwitchWithContextPrompt(renderer, existingPath, pr, false, undefined, "PR Worktree Ready");
+      return;
     }
 
-    // Fetch the branch first
-    git.fetchBranch(branchName);
-
-    // Create new worktree with PR number in folder name
-    const result = git.createWorktree(branchName, { prNumber: pr.number });
+    const result = git.createPRWorktree(pr.number, { headRef: pr.headRef });
     lastCreatedBranch = result.branch;
     if (result.projectInfo.hasDatabases) {
       console.log(`Project: ${result.projectInfo.type}, hooks: ${result.postHooks.message}`);
     }
-    showMainView(renderer);
+    showPRSwitchWithContextPrompt(renderer, result.path, pr, false, undefined, "PR Worktree Ready");
   } catch (error) {
-    showMainView(renderer);
+    showPRWorktreeErrorPrompt(renderer, pr, error instanceof Error ? error.message : String(error));
   }
+}
+
+function createReviewWorktreeFromPR(renderer: CliRenderer, pr: GitHubPR) {
+  try {
+    const result = git.createPRReviewWorktree(pr.number, {
+      baseRef: pr.baseRef,
+      title: pr.title,
+      recreateExisting: true,
+    });
+    lastCreatedBranch = result.branch;
+
+    const prompt = github.generateReviewPrompt(pr, result.reviewMarkdown);
+    showPRSwitchWithContextPrompt(
+      renderer,
+      result.path,
+      pr,
+      false,
+      prompt,
+      "Review Worktree Ready",
+      "With review context",
+      `Latest ${pr.baseRef}; ${result.mergeStatus}; overlap ${result.overlappingFiles.length}`
+    );
+  } catch (error) {
+    showPRReviewErrorPrompt(renderer, pr, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function showPRWorktreeErrorPrompt(renderer: CliRenderer, pr: GitHubPR, message: string) {
+  currentView = "confirm";
+  const root = renderer.root;
+  clearChildren(root);
+
+  const { container, modal, content } = createModal(renderer, {
+    title: "PR Worktree Failed",
+    subtitle: `PR #${pr.number}`,
+    width: 70,
+    statusText: "enter/esc back",
+  });
+  modal.borderColor = Theme.error;
+
+  content.add(new TextRenderable(renderer, {
+    content: pr.title,
+    fg: Theme.textBright,
+  }));
+  content.add(new TextRenderable(renderer, { content: "" }));
+  content.add(new TextRenderable(renderer, {
+    content: message,
+    fg: Theme.error,
+  }));
+
+  const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "confirm" || isTransitioning) return;
+    if (key.name === "return" || key.name === "enter" || key.name === "escape") {
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(() => showGitHubPRs(renderer));
+    }
+  };
+  renderer.keyInput.on("keypress", keyHandler);
+  root.add(container);
+}
+
+function showPRReviewErrorPrompt(renderer: CliRenderer, pr: GitHubPR, message: string) {
+  currentView = "confirm";
+  const root = renderer.root;
+  clearChildren(root);
+
+  const { container, modal, content } = createModal(renderer, {
+    title: "Review Worktree Failed",
+    subtitle: `PR #${pr.number}`,
+    width: 70,
+    statusText: "enter/esc back",
+  });
+  modal.borderColor = Theme.error;
+
+  content.add(new TextRenderable(renderer, {
+    content: pr.title,
+    fg: Theme.textBright,
+  }));
+  content.add(new TextRenderable(renderer, { content: "" }));
+  content.add(new TextRenderable(renderer, {
+    content: message,
+    fg: Theme.error,
+  }));
+
+  const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "confirm" || isTransitioning) return;
+    if (key.name === "return" || key.name === "enter" || key.name === "escape") {
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(() => showGitHubPRs(renderer));
+    }
+  };
+  renderer.keyInput.on("keypress", keyHandler);
+  root.add(container);
 }
 
 function showPRWorktreeExistsPrompt(
@@ -2927,7 +3101,11 @@ function showPRSwitchWithContextPrompt(
   renderer: CliRenderer,
   worktreePath: string,
   pr: GitHubPR,
-  newWindow: boolean = false
+  newWindow: boolean = false,
+  promptOverride?: string,
+  title = "GitHub PR Detected",
+  withContextLabel = "With PR context",
+  withContextDescription = "Include PR details in the AI prompt"
 ) {
   currentView = "pr-switch-confirm";
   const root = renderer.root;
@@ -2970,7 +3148,7 @@ function showPRSwitchWithContextPrompt(
     marginBottom: 1,
   });
   headerRow.add(new TextRenderable(renderer, {
-    content: "GitHub PR Detected",
+    content: title,
     fg: Theme.accent,
   }));
   headerRow.add(new TextRenderable(renderer, {
@@ -3014,11 +3192,11 @@ function showPRSwitchWithContextPrompt(
         marginBottom: 1,
       });
       tile.add(new TextRenderable(renderer, {
-        content: "\uf075  With PR context",
+        content: `\uf075  ${withContextLabel}`,
         fg: selected ? Theme.textBright : Theme.text,
       }));
       tile.add(new TextRenderable(renderer, {
-        content: "Include PR details in OpenCode prompt",
+        content: withContextDescription,
         fg: Theme.muted,
       }));
       return tile;
@@ -3116,12 +3294,12 @@ function showPRSwitchWithContextPrompt(
         if (item.type === "back") {
           showMainView(renderer);
         } else {
-          const prompt = getIncludeContext() ? github.generateInitialPrompt(pr) : undefined;
+          const prompt = getIncludeContext() ? (promptOverride ?? github.generateInitialPrompt(pr)) : undefined;
           if (newWindow) {
-            launchOpenCodeInNewWindow(renderer, worktreePath, prompt);
+            launchAIInNewWindow(renderer, worktreePath, prompt);
             showMainView(renderer);
           } else {
-            launchOpenCode(renderer, worktreePath, prompt);
+            launchAI(renderer, worktreePath, prompt);
           }
         }
       });
@@ -3129,14 +3307,14 @@ function showPRSwitchWithContextPrompt(
       renderer.keyInput.off("keypress", keyHandler);
       transitionToView(() => showMainView(renderer));
     } else if (key.name === "c" || key.name === "C") {
-      const prompt = getIncludeContext() ? github.generateInitialPrompt(pr) : undefined;
+      const prompt = getIncludeContext() ? (promptOverride ?? github.generateInitialPrompt(pr)) : undefined;
       if (keyNewWindow) {
-        launchOpenCodeInNewWindow(renderer, worktreePath, prompt);
+        launchAIInNewWindow(renderer, worktreePath, prompt);
         renderer.keyInput.off("keypress", keyHandler);
         showMainView(renderer);
       } else {
         renderer.keyInput.off("keypress", keyHandler);
-        launchOpenCode(renderer, worktreePath, prompt);
+        launchAI(renderer, worktreePath, prompt);
       }
     } else if (key.name === "n" || key.name === "N") {
       if (keyNewWindow) {
@@ -3409,7 +3587,7 @@ function showSwitchWithContextPrompt(
         fg: selected ? Theme.textBright : Theme.text,
       }));
       tile.add(new TextRenderable(renderer, {
-        content: "Include card details in OpenCode prompt",
+        content: "Include card details in the AI prompt",
         fg: Theme.muted,
       }));
       return tile;
@@ -3512,10 +3690,10 @@ function showSwitchWithContextPrompt(
         } else {
           const prompt = getIncludeContext() ? fizzy.generateInitialPrompt(card, cardNumber) : undefined;
           if (newWindow) {
-            launchOpenCodeInNewWindow(renderer, worktreePath, prompt);
+            launchAIInNewWindow(renderer, worktreePath, prompt);
             showMainView(renderer);
           } else {
-            launchOpenCode(renderer, worktreePath, prompt);
+            launchAI(renderer, worktreePath, prompt);
           }
         }
       });
@@ -3525,12 +3703,12 @@ function showSwitchWithContextPrompt(
     } else if (key.name === "c" || key.name === "C") {
       const prompt = getIncludeContext() ? fizzy.generateInitialPrompt(card, cardNumber) : undefined;
       if (keyNewWindow) {
-        launchOpenCodeInNewWindow(renderer, worktreePath, prompt);
+        launchAIInNewWindow(renderer, worktreePath, prompt);
         renderer.keyInput.off("keypress", keyHandler);
         showMainView(renderer);
       } else {
         renderer.keyInput.off("keypress", keyHandler);
-        launchOpenCode(renderer, worktreePath, prompt);
+        launchAI(renderer, worktreePath, prompt);
       }
     } else if (key.name === "n" || key.name === "N") {
       if (keyNewWindow) {
@@ -3555,31 +3733,22 @@ function showSwitchWithContextPrompt(
   renderer.keyInput.on("keypress", keyHandler);
 }
 
-function launchOpenCode(renderer: CliRenderer, path: string, prompt?: string) {
-  // Build command
-  const model = "anthropic/claude-opus-4-5";
-  let cmd = `opencode -m ${model}`;
-  
-  // Add prompt if provided
+function buildAILaunchCommand(prompt?: string): string {
+  let cmd = "omarchy-launch-ai --path .";
   if (prompt) {
     const escapedPrompt = terminal.escapePath(prompt);
     cmd += ` --prompt '${escapedPrompt}'`;
   }
-
-  terminal.runInPlace(path, cmd, () => renderer.destroy());
+  return cmd;
 }
 
-// Launch opencode in a new terminal window (doesn't take over current window)
-function launchOpenCodeInNewWindow(_renderer: CliRenderer, path: string, prompt?: string) {
-  // Build opencode command
-  const model = "anthropic/claude-opus-4-5";
-  let opencodeCmd = `opencode -m ${model}`;
-  if (prompt) {
-    const escapedPrompt = terminal.escapePath(prompt);
-    opencodeCmd += ` --prompt '${escapedPrompt}'`;
-  }
+function launchAI(renderer: CliRenderer, path: string, prompt?: string) {
+  terminal.runInPlace(path, buildAILaunchCommand(prompt), () => renderer.destroy());
+}
 
-  terminal.openTerminalWindow({ path, command: opencodeCmd });
+// Launch configured AI harness in a new terminal window (doesn't take over current window)
+function launchAIInNewWindow(_renderer: CliRenderer, path: string, prompt?: string) {
+  terminal.openTerminalWindow({ path, command: buildAILaunchCommand(prompt) });
   // Stay on current view
 }
 

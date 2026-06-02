@@ -1,6 +1,6 @@
 // Protocol handler installation for hatchet:// URLs (Linux only)
 // This allows links like:
-//   hatchet://card/123?path=/home/user/project&launch-opencode=true
+//   hatchet://card/123?path=/home/user/project&launch-ai=true
 // to trigger Hatchet from the browser.
 
 import { existsSync, mkdirSync, writeFileSync, chmodSync } from "fs";
@@ -124,8 +124,8 @@ Categories=Development;
   console.log("");
   console.log("Usage:");
   console.log("  hatchet://card/<number>?path=<repo-path>");
-  console.log("  hatchet://card/<number>?path=<repo-path>&launch-opencode=true");
-  console.log("  hatchet://card/<number>?path=<repo-path>&launch-opencode=true&with-context=true");
+  console.log("  hatchet://card/<number>?path=<repo-path>&launch-ai=true");
+  console.log("  hatchet://card/<number>?path=<repo-path>&launch-ai=true&with-context=true");
   console.log("");
   console.log("Test with:");
   console.log(`  xdg-open 'hatchet://card/123?path=${process.cwd()}'`);

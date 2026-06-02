@@ -1,4 +1,4 @@
-import { execSync, spawn } from "child_process";
+import { execFileSync, execSync, spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import type { Worktree } from "../types";
@@ -138,6 +138,341 @@ export interface CreateWorktreeResult {
 export interface CreateWorktreeOptions {
   /** PR number to include in folder name (e.g., repo.pr-123-branch-name) */
   prNumber?: number;
+}
+
+export type PRReviewMergeStatus = "clean" | "conflicts";
+
+export interface CreatePRReviewWorktreeOptions {
+  /** Base branch name from the PR, e.g. master or main */
+  baseRef: string;
+  /** PR title, used only in generated review notes */
+  title?: string;
+  /** Recreate the disposable review worktree if it already exists (default: true) */
+  recreateExisting?: boolean;
+}
+
+export interface PRReviewWorktreeResult {
+  path: string;
+  branch: string;
+  prRef: string;
+  baseRef: string;
+  baseRemoteRef: string;
+  mergeBase: string;
+  baseSha: string;
+  prSha: string;
+  resultSha?: string;
+  mergeStatus: PRReviewMergeStatus;
+  conflictFiles: string[];
+  baseAdvancedCommitCount: number;
+  prCommitCount: number;
+  baseChangedFiles: string[];
+  prChangedFiles: string[];
+  overlappingFiles: string[];
+  projectInfo: ProjectInfo;
+  postHooks: PostWorktreeResult;
+  copiedFiles: string[];
+  reviewMarkdownPath: string;
+  reviewMarkdown: string;
+}
+
+function gitErrorMessage(args: string[], error: unknown): string {
+  const err = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString("utf-8") : err.stderr;
+  const stdout = Buffer.isBuffer(err.stdout) ? err.stdout.toString("utf-8") : err.stdout;
+  const details = (stderr || stdout || err.message || "Unknown git error").trim();
+  return `git ${args.join(" ")} failed: ${details}`;
+}
+
+function gitOutput(args: string[], cwd = repoRoot()): string {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    throw new Error(gitErrorMessage(args, error));
+  }
+}
+
+function gitRun(args: string[], cwd = repoRoot()): void {
+  try {
+    execFileSync("git", args, {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    throw new Error(gitErrorMessage(args, error));
+  }
+}
+
+function gitLines(args: string[], cwd = repoRoot()): string[] {
+  const output = gitOutput(args, cwd);
+  return output ? output.split("\n").filter(Boolean) : [];
+}
+
+function markdownList(items: string[], empty = "_None_"): string {
+  if (items.length === 0) return empty;
+  return items.map((item) => `- \`${item}\``).join("\n");
+}
+
+function ensureWorktreeExclude(worktreeDir: string, pattern: string): void {
+  try {
+    const excludePath = gitOutput(["rev-parse", "--git-path", "info/exclude"], worktreeDir);
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf-8") : "";
+    const lines = existing.split("\n").map((line) => line.trim());
+    if (!lines.includes(pattern)) {
+      fs.appendFileSync(excludePath, `${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${pattern}\n`);
+    }
+  } catch {
+    // Review notes are useful but should never prevent worktree creation.
+  }
+}
+
+export function reviewBranchName(prNumber: number): string {
+  return `hatchet/review-pr-${prNumber}`;
+}
+
+export function reviewWorktreePath(prNumber: number): string {
+  const root = repoRoot();
+  const parentDir = path.dirname(root);
+  return path.join(parentDir, `${repoName()}.review-pr-${prNumber}`);
+}
+
+export function isReviewBranch(branch: string): boolean {
+  return /^hatchet\/review-pr-\d+$/.test(branch);
+}
+
+export function parseReviewPRFromBranch(branch: string): number | null {
+  const match = branch.match(/^hatchet\/review-pr-(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+export function prBranchName(prNumber: number): string {
+  return `hatchet/pr-${prNumber}`;
+}
+
+export function parsePRFromBranch(branch: string): number | null {
+  const match = branch.match(/^hatchet\/pr-(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+export function prWorktreePath(prNumber: number, headRef?: string): string {
+  const root = repoRoot();
+  const parentDir = path.dirname(root);
+  const suffix = headRef ? sanitizeBranch(headRef).replace(/\//g, "-") : `pr-${prNumber}`;
+  return path.join(parentDir, `${repoName()}.pr-${prNumber}-${suffix || `pr-${prNumber}`}`);
+}
+
+function buildPRReviewMarkdown(prNumber: number, result: Omit<PRReviewWorktreeResult, "reviewMarkdown" | "reviewMarkdownPath" | "projectInfo" | "postHooks" | "copiedFiles">, title?: string): string {
+  const lines: string[] = [];
+  const mergeLabel = result.mergeStatus === "clean" ? "Clean merge" : "Merge conflicts";
+
+  lines.push(`# PR #${prNumber} Review Worktree`);
+  if (title) lines.push(`\n${title}`);
+  lines.push("");
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push("");
+  lines.push("## Merge result");
+  lines.push("");
+  lines.push(`- Status: **${mergeLabel}**`);
+  lines.push(`- Base: \`${result.baseRemoteRef}\` @ \`${result.baseSha}\``);
+  lines.push(`- PR head: \`${result.prRef}\` @ \`${result.prSha}\``);
+  if (result.resultSha) lines.push(`- Review HEAD: \`${result.resultSha}\``);
+  lines.push(`- Merge base: \`${result.mergeBase.slice(0, 12)}\``);
+  lines.push(`- Base advanced by: **${result.baseAdvancedCommitCount}** commit(s) since the PR fork point`);
+  lines.push(`- PR commits since fork point: **${result.prCommitCount}**`);
+  if (result.prCommitCount === 0) {
+    lines.push("- Note: the PR head is already contained in the latest base; no PR-only commits remain to merge.");
+  }
+  lines.push("");
+
+  if (result.mergeStatus === "conflicts") {
+    lines.push("## Conflicts");
+    lines.push("");
+    lines.push(markdownList(result.conflictFiles));
+    lines.push("");
+  }
+
+  lines.push("## Changed-file overlap");
+  lines.push("");
+  lines.push(`Overlap count: **${result.overlappingFiles.length}**`);
+  lines.push("");
+  lines.push(markdownList(result.overlappingFiles));
+  lines.push("");
+
+  lines.push("## Files changed on base since PR fork");
+  lines.push("");
+  lines.push(markdownList(result.baseChangedFiles));
+  lines.push("");
+
+  lines.push("## Files changed by PR since fork");
+  lines.push("");
+  lines.push(markdownList(result.prChangedFiles));
+  lines.push("");
+
+  lines.push("## Useful commands");
+  lines.push("");
+  lines.push("```bash");
+  lines.push("git status");
+  lines.push(`git diff --stat ${result.baseRemoteRef}..HEAD`);
+  lines.push(`git diff --name-only ${result.baseRemoteRef}...${result.prRef}`);
+  lines.push("```");
+  lines.push("");
+  lines.push("> This is a local Hatchet review worktree. It does not update or push the PR branch.");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+export function createPRReviewWorktree(prNumber: number, options: CreatePRReviewWorktreeOptions): PRReviewWorktreeResult {
+  clearCache();
+
+  const root = repoRoot();
+  const branchName = reviewBranchName(prNumber);
+  const worktreeDir = reviewWorktreePath(prNumber);
+  const baseRef = options.baseRef || defaultBranch();
+  const baseRemoteRef = `refs/remotes/origin/${baseRef}`;
+  const prRef = `refs/hatchet/pr/${prNumber}`;
+  const recreateExisting = options.recreateExisting ?? true;
+
+  const existingPath = worktreePath(branchName);
+  if (existingPath) {
+    if (!recreateExisting) {
+      throw new Error(`Review worktree already exists: ${existingPath}`);
+    }
+    gitRun(["worktree", "remove", "--force", existingPath], root);
+    clearCache();
+  }
+
+  if (fs.existsSync(worktreeDir)) {
+    if (!recreateExisting) {
+      throw new Error(`Review worktree path already exists: ${worktreeDir}`);
+    }
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  }
+
+  // Remove the old local synthetic branch if it exists and is not checked out.
+  try {
+    gitRun(["branch", "-D", branchName], root);
+  } catch {
+    // It may not exist yet, which is fine.
+  }
+
+  // Always review against the latest fetched base and the PR's current head.
+  gitRun(["fetch", "origin", `${baseRef}:${baseRemoteRef}`], root);
+  gitRun(["fetch", "origin", `+pull/${prNumber}/head:${prRef}`], root);
+
+  const mergeBase = gitOutput(["merge-base", baseRemoteRef, prRef], root);
+  const baseSha = gitOutput(["rev-parse", "--short", baseRemoteRef], root);
+  const prSha = gitOutput(["rev-parse", "--short", prRef], root);
+  const baseAdvancedCommitCount = Number(gitOutput(["rev-list", "--count", `${mergeBase}..${baseRemoteRef}`], root)) || 0;
+  const prCommitCount = Number(gitOutput(["rev-list", "--count", `${mergeBase}..${prRef}`], root)) || 0;
+  const baseChangedFiles = gitLines(["diff", "--name-only", `${mergeBase}..${baseRemoteRef}`], root);
+  const prChangedFiles = gitLines(["diff", "--name-only", `${mergeBase}..${prRef}`], root);
+  const baseChangedSet = new Set(baseChangedFiles);
+  const overlappingFiles = prChangedFiles.filter((file) => baseChangedSet.has(file));
+
+  gitRun(["worktree", "add", "-B", branchName, worktreeDir, baseRemoteRef], root);
+
+  let mergeStatus: PRReviewMergeStatus = "clean";
+  try {
+    gitRun(["merge", "--no-ff", "--no-edit", prRef], worktreeDir);
+  } catch {
+    mergeStatus = "conflicts";
+  }
+
+  const conflictFiles = mergeStatus === "conflicts"
+    ? gitLines(["diff", "--name-only", "--diff-filter=U"], worktreeDir)
+    : [];
+  const resultSha = mergeStatus === "clean"
+    ? gitOutput(["rev-parse", "--short", "HEAD"], worktreeDir)
+    : undefined;
+
+  const projectInfo = detectProjectType(root);
+  const copiedFiles = copyWorktreeFiles(root, worktreeDir);
+  const postHooks = runPostWorktreeHooks(root, worktreeDir);
+
+  const resultForMarkdown = {
+    path: worktreeDir,
+    branch: branchName,
+    prRef,
+    baseRef,
+    baseRemoteRef,
+    mergeBase,
+    baseSha,
+    prSha,
+    resultSha,
+    mergeStatus,
+    conflictFiles,
+    baseAdvancedCommitCount,
+    prCommitCount,
+    baseChangedFiles,
+    prChangedFiles,
+    overlappingFiles,
+  };
+  const reviewMarkdown = buildPRReviewMarkdown(prNumber, resultForMarkdown, options.title);
+  const reviewDir = path.join(worktreeDir, ".hatchet");
+  fs.mkdirSync(reviewDir, { recursive: true });
+  const reviewMarkdownPath = path.join(reviewDir, "review.md");
+  fs.writeFileSync(reviewMarkdownPath, reviewMarkdown);
+  ensureWorktreeExclude(worktreeDir, ".hatchet/");
+
+  clearCache();
+
+  return {
+    ...resultForMarkdown,
+    projectInfo,
+    postHooks,
+    copiedFiles,
+    reviewMarkdownPath,
+    reviewMarkdown,
+  };
+}
+
+export function createPRWorktree(prNumber: number, options?: { headRef?: string }): CreateWorktreeResult {
+  clearCache();
+
+  const root = repoRoot();
+  const branchName = prBranchName(prNumber);
+  const worktreeDir = prWorktreePath(prNumber, options?.headRef);
+  const prRef = `refs/hatchet/pr/${prNumber}`;
+
+  const existingPath = worktreePath(branchName);
+  if (existingPath) {
+    throw new Error(`PR worktree already exists: ${existingPath}`);
+  }
+
+  if (fs.existsSync(worktreeDir)) {
+    throw new Error(`PR worktree path already exists: ${worktreeDir}`);
+  }
+
+  // Fetch through GitHub's pull ref so PRs from forks work too.
+  gitRun(["fetch", "origin", `+pull/${prNumber}/head:${prRef}`], root);
+
+  // This branch namespace is owned by Hatchet, so an unchecked-out stale branch can be replaced.
+  try {
+    gitRun(["branch", "-D", branchName], root);
+  } catch {
+    // It may not exist yet, which is fine.
+  }
+
+  gitRun(["worktree", "add", "-b", branchName, worktreeDir, prRef], root);
+
+  clearCache();
+
+  const projectInfo = detectProjectType(root);
+  const copiedFiles = copyWorktreeFiles(root, worktreeDir);
+  const postHooks = runPostWorktreeHooks(root, worktreeDir);
+
+  return {
+    path: worktreeDir,
+    branch: branchName,
+    projectInfo,
+    postHooks,
+    copiedFiles,
+  };
 }
 
 export function createWorktree(branch: string, options?: CreateWorktreeOptions): CreateWorktreeResult {

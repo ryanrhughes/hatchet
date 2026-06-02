@@ -139,9 +139,10 @@ hatchet [options]
 Options:
   -c, --card <number>    Fizzy card number to create/switch worktree for
       --pr <number>      GitHub PR number to create/switch worktree for
+      --review-pr <num>  Create a local latest-base merge worktree for PR review
   -p, --path <dir>       Path to git repository (required for protocol handler)
-  -o, --launch-opencode  Launch OpenCode in the worktree after creation
-      --with-context     Include card/PR context in OpenCode prompt (requires -o)
+  -o, --launch-ai        Launch the configured AI harness in the worktree after creation
+      --with-context     Include card/PR/review context in the AI prompt (requires -o)
   -l, --list             List worktrees and exit
       --install-handler  Install hatchet:// protocol handler (Linux)
   -h, --help             Show help
@@ -160,18 +161,22 @@ hatchet --card 123
 # Create/switch to worktree for PR #456
 hatchet --pr 456
 
-# Create worktree and launch OpenCode
-hatchet --card 123 --launch-opencode
+# Review PR #456 as merged onto the latest base branch
+hatchet --review-pr 456
+hatchet --review-pr 456 -o --with-context
+
+# Create worktree and launch the configured AI harness
+hatchet --card 123 --launch-ai
 hatchet -c 123 -o
 hatchet --pr 456 -o
 
-# Create worktree and launch OpenCode with card/PR context in prompt
-hatchet --card 123 --launch-opencode --with-context
+# Create worktree and launch the configured AI harness with card/PR context in prompt
+hatchet --card 123 --launch-ai --with-context
 hatchet -c 123 -o --with-context
 hatchet --pr 456 -o --with-context
 
 # Work with a specific repo (useful for protocol handler)
-hatchet --card 123 --path /home/user/myproject --launch-opencode
+hatchet --card 123 --path /home/user/myproject --launch-ai
 
 # List all worktrees
 hatchet --list
@@ -196,16 +201,20 @@ This creates a `.desktop` file and registers Hatchet as the handler for `hatchet
 ### URL Format
 
 ```
-hatchet://card/<number>?path=<repo-path>&launch-opencode=true&with-context=true
-hatchet://pr/<number>?path=<repo-path>&launch-opencode=true&with-context=true
+hatchet://card/<number>?path=<repo-path>&launch-ai=true&with-context=true
+hatchet://pr/<number>?path=<repo-path>&launch-ai=true&with-context=true
+hatchet://review-pr/<number>?path=<repo-path>&launch-ai=true&with-context=true
 ```
 
 **Parameters:**
 - `card/<number>` - The Fizzy card number (for card URLs)
-- `pr/<number>` - The GitHub PR number (for PR URLs)
+- `pr/<number>` - The GitHub PR number (for PR branch worktree URLs)
+- `review-pr/<number>` - The GitHub PR number for latest-base review worktree URLs
 - `path` - Absolute path to the git repository (required)
-- `launch-opencode` - Set to `true` to launch OpenCode after creation
-- `with-context` - Set to `true` to include card/PR details in OpenCode prompt
+- `launch-ai` - Set to `true` to launch the configured AI harness after creation
+- `with-context` - Set to `true` to include card/PR/review details in the AI prompt
+
+Older `launch-opencode=true` URLs remain supported for compatibility.
 
 ### URL Examples
 
@@ -216,13 +225,18 @@ hatchet://card/123?path=/home/user/myproject
 # Create worktree for a PR
 hatchet://pr/456?path=/home/user/myproject
 
-# Create and launch OpenCode
-hatchet://card/123?path=/home/user/myproject&launch-opencode=true
-hatchet://pr/456?path=/home/user/myproject&launch-opencode=true
+# Create latest-base review worktree for a PR
+hatchet://review-pr/456?path=/home/user/myproject
 
-# Create, launch OpenCode, and include context
-hatchet://card/123?path=/home/user/myproject&launch-opencode=true&with-context=true
-hatchet://pr/456?path=/home/user/myproject&launch-opencode=true&with-context=true
+# Create and launch the configured AI harness
+hatchet://card/123?path=/home/user/myproject&launch-ai=true
+hatchet://pr/456?path=/home/user/myproject&launch-ai=true
+hatchet://review-pr/456?path=/home/user/myproject&launch-ai=true
+
+# Create, launch the configured AI harness, and include context
+hatchet://card/123?path=/home/user/myproject&launch-ai=true&with-context=true
+hatchet://pr/456?path=/home/user/myproject&launch-ai=true&with-context=true
+hatchet://review-pr/456?path=/home/user/myproject&launch-ai=true&with-context=true
 ```
 
 ### Testing
@@ -233,6 +247,9 @@ xdg-open 'hatchet://card/123?path=/home/user/myproject'
 
 # Test the protocol handler with a PR
 xdg-open 'hatchet://pr/456?path=/home/user/myproject'
+
+# Test the protocol handler with PR review mode
+xdg-open 'hatchet://review-pr/456?path=/home/user/myproject'
 ```
 
 ### Integration with Fizzy
@@ -240,7 +257,7 @@ xdg-open 'hatchet://pr/456?path=/home/user/myproject'
 To add "Open in Hatchet" links to your Fizzy board, you can create links like:
 
 ```html
-<a href="hatchet://card/123?path=/home/user/myproject&launch-opencode=true&with-context=true">
+<a href="hatchet://card/123?path=/home/user/myproject&launch-ai=true&with-context=true">
   Open in Hatchet
 </a>
 ```
@@ -368,8 +385,6 @@ Project config takes precedence over global config.
   "skipDatabaseCopy": false,
   // Skip copying environment files (.env, .env.local, master.key, etc.)
   "skipEnvCopy": false,
-  // Default model to use when launching OpenCode (format: provider/model)
-  "opencodeModel": "opencode/claude-opus-4-5",
   // Additional files to copy when creating worktrees (relative to repo root)
   "additionalFilesToCopy": ["special_file", "config/custom.yml"]
 }
