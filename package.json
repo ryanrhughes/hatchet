@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "hatchet": "bun src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@opentui/core": "^0.1.13",

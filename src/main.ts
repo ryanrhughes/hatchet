@@ -4,12 +4,9 @@ import {
   createCliRenderer,
   BoxRenderable,
   TextRenderable,
-  SelectRenderable,
-  SelectRenderableEvents,
   InputRenderable,
   InputRenderableEvents,
   ScrollBoxRenderable,
-  ASCIIFontRenderable,
   type CliRenderer,
   type Renderable,
 } from "@opentui/core";
@@ -21,13 +18,16 @@ import { createPRTile } from "./helpers/pr-tile";
 import { Theme, detectPalette, getFizzyColor, getFizzyColorDimmed } from "./theme";
 import { renderHtml } from "./helpers/html";
 import { createCardTile } from "./helpers/card-tile";
-import { 
-  extractImageUrls, 
+import {
+  extractImageUrls,
   createImagePlaceholder,
-  type ImageInfo 
+  type ImageInfo
 } from "./helpers/image";
 import * as terminal from "./helpers/terminal";
 import { parseArgs } from "./helpers/cli";
+import { loadConfig } from "./helpers/config";
+import * as metadata from "./helpers/metadata";
+import * as projects from "./helpers/projects";
 import { installProtocolHandler } from "./helpers/protocol-handler";
 import * as fs from "fs";
 
@@ -145,6 +145,19 @@ function createModal(renderer: CliRenderer, options: ModalOptions): ModalCompone
   container.add(modal);
 
   return { container, modal, content };
+}
+
+function showWorkingView(renderer: CliRenderer, title: string, subtitle?: string, message = "Working...") {
+  currentView = "confirm";
+  const root = renderer.root;
+  clearChildren(root);
+  const { container, content } = createModal(renderer, {
+    title,
+    subtitle,
+    width: 60,
+  });
+  content.add(new TextRenderable(renderer, { content: message, fg: Theme.muted }));
+  root.add(container);
 }
 
 // ============================================================================
@@ -421,14 +434,14 @@ function createTextTile(
   renderer: CliRenderer,
   text: string,
   selected: boolean,
-  options?: { 
+  options?: {
     description?: string;
     borderColor?: string;
     selectedBorderColor?: string;
   }
 ): BoxRenderable {
   const { description, borderColor = Theme.muted, selectedBorderColor = Theme.accent } = options ?? {};
-  
+
   const tile = new BoxRenderable(renderer, {
     width: "100%",
     flexDirection: "column",
@@ -476,7 +489,7 @@ function createBackTile(renderer: CliRenderer, selected: boolean): BoxRenderable
 }
 
 // Track current view for navigation
-type ViewType = "main" | "create" | "fizzy-boards" | "fizzy-columns" | "fizzy-cards" | "github-prs" | "confirm" | "switch-confirm" | "pr-switch-confirm" | "delete-confirm";
+type ViewType = "projects" | "main" | "create" | "fizzy-boards" | "fizzy-columns" | "fizzy-cards" | "github-prs" | "confirm" | "switch-confirm" | "pr-switch-confirm" | "delete-confirm";
 let currentView: ViewType = "main";
 // Flag to prevent operations during view transitions
 let isTransitioning = false;
@@ -503,6 +516,22 @@ let lastCreatedBranch: string | null = null;
 /**
  * List worktrees in CLI format (non-interactive)
  */
+function listProjectsCli(): void {
+  const registered = projects.loadProjects();
+  if (registered.length === 0) {
+    console.log("No Hatchet projects registered.");
+    console.log(`Add one with: hatchet --add-repo <name> --repo-path <path>`);
+    return;
+  }
+
+  console.log("Projects:");
+  for (const project of registered) {
+    console.log(`  ${project.name}`);
+    console.log(`    ${project.path}`);
+    if (project.remote) console.log(`    ${project.remote}`);
+  }
+}
+
 function listWorktreesCli(): void {
   const wts = git.worktrees();
   if (wts.length === 0) {
@@ -524,18 +553,49 @@ interface DirectLaunchOptions {
   withContext?: boolean;
 }
 
+function getAICommand(): string {
+  return loadConfig(git.repoRoot()).aiCommand || "omarchy-launch-ai";
+}
+
+function getEditorCommand(): string {
+  const config = loadConfig(git.repoRoot());
+  return config.editorCommand || process.env.VISUAL || process.env.EDITOR || "nvim";
+}
+
 function launchAICli(worktreePath: string, prompt?: string): void {
+  const aiCommand = getAICommand();
   const args = ["--path", worktreePath];
   if (prompt) {
     args.push("--prompt", prompt);
   }
 
   const { spawnSync } = require("child_process");
-  const result = spawnSync("omarchy-launch-ai", args, { stdio: "inherit" });
+  const result = spawnSync(aiCommand, args, { stdio: "inherit" });
   if (result.error) {
-    console.error(`Error: Could not launch AI harness with omarchy-launch-ai: ${result.error.message}`);
+    console.error(`Error: Could not launch AI harness with ${aiCommand}: ${result.error.message}`);
     process.exit(1);
   }
+}
+
+function writeMetadataForResult(
+  result: git.CreateWorktreeResult,
+  input: Omit<metadata.WorktreeMetadataInput, "repoName" | "repoRoot" | "branch" | "worktreePath" | "copiedFiles" | "setup" | "launch">
+): void {
+  const config = loadConfig(git.repoRoot());
+  metadata.writeWorktreeMetadata(result.path, {
+    ...input,
+    repoName: git.repoName(),
+    repoRoot: git.repoRoot(),
+    branch: result.branch,
+    worktreePath: result.path,
+    copiedFiles: result.copiedFiles,
+    setup: metadata.setupMetadataFromPostHooks(result.postHooks),
+    launch: {
+      aiCommand: config.aiCommand,
+      devCommand: config.devCommand,
+      editorCommand: config.editorCommand,
+    },
+  });
 }
 
 /**
@@ -568,6 +628,11 @@ function processCardDirect(cardNumber: number, options: DirectLaunchOptions): vo
     // Create worktree
     console.log(`Creating worktree for card #${cardNumber}: ${card.title}`);
     const result = git.createWorktree(branchName);
+    writeMetadataForResult(result, {
+      source: "fizzy-card",
+      title: card.title,
+      card: { number: cardNumber, title: card.title },
+    });
     worktreePath = result.path;
     console.log(`Created: ${worktreePath}`);
 
@@ -617,6 +682,11 @@ function processPRDirect(prNumber: number, options: DirectLaunchOptions): void {
   } else {
     console.log(`Creating worktree for PR #${prNumber}: ${pr.title}`);
     const result = git.createPRWorktree(prNumber, { headRef: pr.headRef });
+    writeMetadataForResult(result, {
+      source: "github-pr",
+      title: pr.title,
+      pr: { number: prNumber, title: pr.title, headRef: pr.headRef, baseRef: pr.baseRef },
+    });
     worktreePath = result.path;
     console.log(`Created: ${worktreePath}`);
 
@@ -666,6 +736,12 @@ function processPRReviewDirect(prNumber: number, options: DirectLaunchOptions): 
     process.exit(1);
   }
 
+  writeMetadataForResult(result, {
+    source: "github-pr-review",
+    title: pr.title,
+    pr: { number: prNumber, title: pr.title, headRef: pr.headRef, baseRef: pr.baseRef, review: true },
+  });
+
   console.log(`Created: ${result.path}`);
   console.log(`Review notes: ${result.reviewMarkdownPath}`);
   console.log(`Merge: ${result.mergeStatus === "clean" ? "clean" : "conflicts"}`);
@@ -700,6 +776,47 @@ async function main() {
     process.exit(0);
   }
 
+  if (options.listRepos) {
+    listProjectsCli();
+    process.exit(0);
+  }
+
+  if (options.addRepo) {
+    const repoPath = options.repoPath || (options.cloneRepo ? `~/Work/${options.addRepo}` : undefined);
+    if (!repoPath) {
+      console.error("Error: --add-repo requires --repo-path unless --clone-repo is provided.");
+      process.exit(1);
+    }
+    const project = projects.addProject({
+      name: options.addRepo,
+      path: repoPath,
+      remote: options.cloneRepo,
+    });
+    try {
+      projects.ensureProjectAvailable(project);
+    } catch (error) {
+      console.error(`Warning: Project registered but not available yet: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    console.log(`Registered project ${project.name}: ${project.path}`);
+    process.exit(0);
+  }
+
+  if (options.repo) {
+    const project = projects.findProject(options.repo);
+    if (!project) {
+      console.error(`Error: Unknown Hatchet project: ${options.repo}`);
+      console.error("Run `hatchet --list-repos` to see registered projects.");
+      process.exit(1);
+    }
+    try {
+      const availableProject = projects.ensureProjectAvailable(project);
+      process.chdir(availableProject.path);
+    } catch (error) {
+      console.error(`Error: Could not use project ${options.repo}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
   // Handle --path: change to specified directory
   if (options.path) {
     try {
@@ -710,11 +827,16 @@ async function main() {
     }
   }
 
-  // Check git repo (after potential chdir)
-  if (!git.inGitRepo()) {
+  // Check git repo (after potential chdir). Interactive mode can start from
+  // the registered project list when launched outside a repository.
+  const hasDirectAction = options.list || options.card || options.pr || options.reviewPr;
+  const startedOutsideRepo = !git.inGitRepo();
+  if (startedOutsideRepo && hasDirectAction) {
     console.error("Error: Not a git repository");
     if (options.path) {
       console.error(`  Path: ${options.path}`);
+    } else if (!options.repo) {
+      console.error("  Use --path <repo> or --repo <registered-project>.");
     }
     process.exit(1);
   }
@@ -756,11 +878,13 @@ async function main() {
   // Interactive TUI mode (existing behavior)
   // ========================================================================
 
-  // Check Fizzy authentication status once at startup
-  fizzyAuthenticated = fizzy.isAuthenticated();
-  
-  // Check GitHub authentication status once at startup
-  githubAuthenticated = github.isAuthenticated();
+  if (!startedOutsideRepo) {
+    // Check Fizzy authentication status once at startup
+    fizzyAuthenticated = fizzy.isAuthenticated();
+
+    // Check GitHub authentication status once at startup
+    githubAuthenticated = github.isAuthenticated();
+  }
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -779,11 +903,11 @@ async function main() {
       renderer.console.toggle();
       return;
     }
-    
+
     if (key.name === "escape") {
       if (isTransitioning) return;
-      
-      if (currentView === "main") {
+
+      if (currentView === "main" || currentView === "projects") {
         renderer.destroy();
         process.exit(0);
       } else if (currentView === "fizzy-cards" || currentView === "fizzy-boards" || currentView === "fizzy-columns" || currentView === "github-prs") {
@@ -805,8 +929,105 @@ async function main() {
     }
   });
 
-  showMainView(renderer);
+  if (startedOutsideRepo) {
+    showProjectsView(renderer);
+  } else {
+    showMainView(renderer);
+  }
   renderer.start();
+}
+
+function enterProject(renderer: CliRenderer, project: projects.HatchetProject): void {
+  try {
+    const availableProject = projects.ensureProjectAvailable(project);
+    process.chdir(availableProject.path);
+    git.clearCache();
+    fizzyAuthenticated = fizzy.isAuthenticated();
+    githubAuthenticated = github.isAuthenticated();
+    showMainView(renderer);
+  } catch (error) {
+    showProjectErrorView(renderer, project, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function showProjectsView(renderer: CliRenderer) {
+  currentView = "projects";
+  const root = renderer.root;
+  clearChildren(root);
+
+  const registered = projects.loadProjects();
+  if (registered.length === 0) {
+    const { container, content } = createModal(renderer, {
+      title: "Hatchet Projects",
+      width: 70,
+      statusText: "q/esc quit",
+    });
+    content.add(new TextRenderable(renderer, { content: "No projects registered and current directory is not a git repository.", fg: Theme.warning }));
+    content.add(new TextRenderable(renderer, { content: "" }));
+    content.add(new TextRenderable(renderer, { content: "Add one with:", fg: Theme.muted }));
+    content.add(new TextRenderable(renderer, { content: "  hatchet --add-repo <name> --repo-path ~/Work/<repo>", fg: Theme.accent }));
+    content.add(new TextRenderable(renderer, { content: "  hatchet --add-repo <name> --clone-repo git@github.com:org/repo.git", fg: Theme.accent }));
+    root.add(container);
+    return;
+  }
+
+  type ProjectItem = { type: "project"; project: projects.HatchetProject } | { type: "quit" };
+  const items: ProjectItem[] = registered.map(project => ({ type: "project", project }));
+  items.push({ type: "quit" });
+
+  const { container } = createSelectionList<ProjectItem>({
+    renderer,
+    viewName: "projects",
+    title: "Select Project",
+    subtitle: "Hatchet",
+    width: 70,
+    items,
+    renderItem: (item, selected) => {
+      if (item.type === "quit") return createTextTile(renderer, "Quit", selected);
+      return createTextTile(renderer, item.project.name, selected, {
+        description: item.project.path,
+      });
+    },
+    onSelect: (item) => {
+      if (item.type === "quit") {
+        renderer.destroy();
+        process.exit(0);
+      } else {
+        enterProject(renderer, item.project);
+      }
+    },
+    onBack: () => {
+      renderer.destroy();
+      process.exit(0);
+    },
+    footerText: "Add projects with: hatchet --add-repo <name> --repo-path <path>",
+  });
+
+  root.add(container);
+}
+
+function showProjectErrorView(renderer: CliRenderer, project: projects.HatchetProject, message: string) {
+  currentView = "confirm";
+  const root = renderer.root;
+  clearChildren(root);
+  const { container, content, modal } = createModal(renderer, {
+    title: "Project Unavailable",
+    subtitle: project.name,
+    width: 70,
+    statusText: "enter/esc back",
+  });
+  modal.borderColor = Theme.error;
+  content.add(new TextRenderable(renderer, { content: message, fg: Theme.error }));
+
+  const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "confirm" || isTransitioning) return;
+    if (key.name === "return" || key.name === "enter" || key.name === "escape") {
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(() => showProjectsView(renderer));
+    }
+  };
+  renderer.keyInput.on("keypress", keyHandler);
+  root.add(container);
 }
 
 // Special marker values for non-worktree options
@@ -895,6 +1116,19 @@ function showMainView(renderer: CliRenderer) {
     content: "Worktrees",
     fg: Theme.accent,
   }));
+
+  const mainFilterInput = new InputRenderable(renderer, {
+    width: "100%",
+    height: 1,
+    placeholder: "filter worktrees...",
+    backgroundColor: Theme.transparent,
+    focusedBackgroundColor: Theme.backgroundSubtle,
+    textColor: Theme.text,
+    focusedTextColor: Theme.text,
+    placeholderColor: Theme.muted,
+    cursorColor: Theme.primary,
+  });
+  leftPanel.add(mainFilterInput);
   leftPanel.add(new TextRenderable(renderer, { content: "" }));
 
   // Sort worktrees: main/master first, then alphabetically
@@ -913,14 +1147,14 @@ function showMainView(renderer: CliRenderer) {
     ...sortedWorktrees.map(wt => ({ type: "worktree" as const, wt })),
     { type: "create", action: CREATE_NEW, label: "New worktree", desc: "Create from current HEAD", icon: "\uf067" }, // nf-fa-plus
   ];
-  
+
   // Only show Fizzy option if authenticated
   if (fizzyAuthenticated) {
     items.push({ type: "create", action: CREATE_FROM_FIZZY, label: "From Fizzy card", desc: "Create from a task card", icon: "\uf0ae" }); // nf-fa-tasks
   } else {
     items.push({ type: "create", action: CREATE_FROM_FIZZY, label: "Auth Fizzy to pull cards", desc: "Run: fizzy auth login", icon: "\uf023" }); // nf-fa-lock
   }
-  
+
   // Only show GitHub PR option if authenticated
   if (githubAuthenticated) {
     items.push({ type: "create", action: CREATE_FROM_PR, label: "From GitHub PR", desc: "Review a pull request", icon: "\uf407" }); // nf-oct-git_pull_request
@@ -929,10 +1163,20 @@ function showMainView(renderer: CliRenderer) {
   }
 
   // Custom list with styled tiles
+  let filterQuery = "";
+  const itemMatchesFilter = (item: ListItem): boolean => {
+    if (!filterQuery) return true;
+    if (item.type === "worktree") {
+      return item.wt.branch.toLowerCase().includes(filterQuery) || item.wt.path.toLowerCase().includes(filterQuery);
+    }
+    return item.label.toLowerCase().includes(filterQuery) || item.desc.toLowerCase().includes(filterQuery);
+  };
+  const getVisibleItems = () => items.filter(itemMatchesFilter);
+
   // Find initial selection based on lastCreatedBranch
   let selectedIndex = 0;
   if (lastCreatedBranch) {
-    const idx = items.findIndex(item => 
+    const idx = items.findIndex(item =>
       item.type === "worktree" && item.wt.branch === lastCreatedBranch
     );
     if (idx >= 0) {
@@ -940,7 +1184,7 @@ function showMainView(renderer: CliRenderer) {
     }
     lastCreatedBranch = null; // Clear after using
   }
-  
+
   const listContainer = new ScrollBoxRenderable(renderer, {
     width: "100%",
     flexGrow: 1,
@@ -963,7 +1207,7 @@ function showMainView(renderer: CliRenderer) {
   const createWorktreeTile = (wt: typeof worktrees[0], selected: boolean) => {
     const isMain = isMainBranch(wt.branch);
     const status = git.getBranchStatus(wt.path);
-    
+
     const tile = new BoxRenderable(renderer, {
       width: "100%",
       flexDirection: "column",
@@ -1075,7 +1319,7 @@ function showMainView(renderer: CliRenderer) {
       flexDirection: "row",
       backgroundColor: Theme.transparent,
     });
-    
+
     topRow.add(new TextRenderable(renderer, {
       content: `${icon} `,
       fg: Theme.accent,
@@ -1084,7 +1328,7 @@ function showMainView(renderer: CliRenderer) {
       content: label,
       fg: selected ? Theme.textBright : Theme.text,
     }));
-    
+
     tile.add(topRow);
     tile.add(new TextRenderable(renderer, {
       content: desc,
@@ -1097,8 +1341,10 @@ function showMainView(renderer: CliRenderer) {
   // Rebuild the list
   const rebuildList = () => {
     clearChildren(listContainer);
-    
-    items.forEach((item, index) => {
+    const visibleItems = getVisibleItems();
+    if (selectedIndex >= visibleItems.length) selectedIndex = Math.max(0, visibleItems.length - 1);
+
+    visibleItems.forEach((item, index) => {
       const selected = index === selectedIndex;
       if (item.type === "worktree") {
         listContainer.add(createWorktreeTile(item.wt, selected));
@@ -1109,8 +1355,8 @@ function showMainView(renderer: CliRenderer) {
   };
 
   // Get selected item
-  const getSelectedItem = () => items[selectedIndex];
-  
+  const getSelectedItem = () => getVisibleItems()[selectedIndex];
+
   // Get selected worktree (if any)
   const getSelectedWorktree = () => {
     const item = getSelectedItem();
@@ -1155,9 +1401,9 @@ function showMainView(renderer: CliRenderer) {
   const updateDetails = () => {
     clearChildren(detailContent);
     const item = getSelectedItem();
-    
+
     if (!item) return;
-    
+
     if (item.type === "create") {
       if (item.action === CREATE_NEW) {
         detailContent.add(new TextRenderable(renderer, { content: "Create New Worktree", fg: Theme.text }));
@@ -1198,7 +1444,7 @@ function showMainView(renderer: CliRenderer) {
     } else {
       const wt = item.wt;
       const isMain = isMainBranch(wt.branch);
-      
+
       // Branch name with badge for main
       detailContent.add(new TextRenderable(renderer, { content: "Branch", fg: Theme.muted }));
       if (isMain) {
@@ -1214,28 +1460,45 @@ function showMainView(renderer: CliRenderer) {
         detailContent.add(new TextRenderable(renderer, { content: wt.branch, fg: Theme.text }));
       }
       detailContent.add(new TextRenderable(renderer, { content: "" }));
-      
+
       // Path
       detailContent.add(new TextRenderable(renderer, { content: "Path", fg: Theme.muted }));
       detailContent.add(new TextRenderable(renderer, { content: wt.path, fg: Theme.text }));
       detailContent.add(new TextRenderable(renderer, { content: "" }));
-      
+
+      const worktreeMetadata = metadata.readWorktreeMetadata(wt.path);
+      if (worktreeMetadata) {
+        detailContent.add(new TextRenderable(renderer, { content: "Hatchet", fg: Theme.muted }));
+        detailContent.add(new TextRenderable(renderer, {
+          content: `${worktreeMetadata.source}${worktreeMetadata.setup?.status ? ` · setup ${worktreeMetadata.setup.status}` : ""}`,
+          fg: worktreeMetadata.setup?.status === "failed" ? Theme.error : Theme.secondary,
+        }));
+        if (worktreeMetadata.title) {
+          detailContent.add(new TextRenderable(renderer, { content: worktreeMetadata.title, fg: Theme.text }));
+        }
+        detailContent.add(new TextRenderable(renderer, { content: "" }));
+      }
+
       // Get branch status (already cached from tile creation)
       const status = git.getBranchStatus(wt.path);
-      
+
       // Status line (ahead/behind + dirty)
       detailContent.add(new TextRenderable(renderer, { content: "Status", fg: Theme.muted }));
-      
+
       const statusParts: string[] = [];
-      if (status.ahead > 0) statusParts.push(`↑${status.ahead} ahead`);
-      if (status.behind > 0) statusParts.push(`↓${status.behind} behind`);
-      if (status.ahead === 0 && status.behind === 0) statusParts.push("Up to date with remote");
-      
-      detailContent.add(new TextRenderable(renderer, { 
-        content: statusParts.join(", "), 
-        fg: (status.ahead > 0 || status.behind > 0) ? Theme.warning : Theme.success 
+      if (!status.hasUpstream) {
+        statusParts.push("No upstream configured");
+      } else {
+        if (status.ahead > 0) statusParts.push(`↑${status.ahead} ahead`);
+        if (status.behind > 0) statusParts.push(`↓${status.behind} behind`);
+        if (status.ahead === 0 && status.behind === 0) statusParts.push(`Up to date with ${status.upstream ?? "remote"}`);
+      }
+
+      detailContent.add(new TextRenderable(renderer, {
+        content: statusParts.join(", "),
+        fg: !status.hasUpstream || status.ahead > 0 || status.behind > 0 ? Theme.warning : Theme.success
       }));
-      
+
       if (status.dirty) {
         const changes: string[] = [];
         if (status.staged > 0) changes.push(`${status.staged} staged`);
@@ -1246,34 +1509,34 @@ function showMainView(renderer: CliRenderer) {
         detailContent.add(new TextRenderable(renderer, { content: "Working tree clean", fg: Theme.success }));
       }
       detailContent.add(new TextRenderable(renderer, { content: "" }));
-      
+
       // Recent commits
       if (status.recentCommits.length > 0) {
         detailContent.add(new TextRenderable(renderer, { content: "Recent Commits", fg: Theme.muted }));
-        
+
         for (const commit of status.recentCommits) {
           const commitRow = new BoxRenderable(renderer, {
             flexDirection: "row",
             backgroundColor: Theme.transparent,
           });
-          commitRow.add(new TextRenderable(renderer, { 
-            content: commit.hash, 
-            fg: Theme.secondary 
+          commitRow.add(new TextRenderable(renderer, {
+            content: commit.hash,
+            fg: Theme.secondary
           }));
-          commitRow.add(new TextRenderable(renderer, { 
-            content: ` ${commit.message}`, 
-            fg: Theme.text 
+          commitRow.add(new TextRenderable(renderer, {
+            content: ` ${commit.message}`,
+            fg: Theme.text
           }));
           detailContent.add(commitRow);
-          
-          detailContent.add(new TextRenderable(renderer, { 
-            content: `  ${commit.relativeDate} by ${commit.author}`, 
-            fg: Theme.muted 
+
+          detailContent.add(new TextRenderable(renderer, {
+            content: `  ${commit.relativeDate} by ${commit.author}`,
+            fg: Theme.muted
           }));
         }
         detailContent.add(new TextRenderable(renderer, { content: "" }));
       }
-      
+
       // Check if it's a Hatchet PR branch
       const prNumber = git.parsePRFromBranch(wt.branch) ?? git.parseReviewPRFromBranch(wt.branch);
       if (prNumber) {
@@ -1290,7 +1553,7 @@ function showMainView(renderer: CliRenderer) {
       }
     }
   };
-  
+
   // Initial update
   updateDetails();
 
@@ -1320,6 +1583,7 @@ function showMainView(renderer: CliRenderer) {
   addKeybind("c", "AI");
   addKeybind("n", "nvim");
   addKeybind("t", "terminal");
+  addKeybind("/", "filter");
   addKeybind("d", "delete");
   addKeybind("⇧", "new window");
   addKeybind("q", "quit");
@@ -1338,13 +1602,24 @@ function showMainView(renderer: CliRenderer) {
     }
   };
 
+  let focusedPane: "list" | "filter" = "list";
+
+  mainFilterInput.on(InputRenderableEvents.INPUT, () => {
+    filterQuery = mainFilterInput.value.toLowerCase().trim();
+    selectedIndex = 0;
+    rebuildList();
+    updateDetails();
+  });
+
   // Navigation helpers
   const moveSelection = (delta: number) => {
     let newIndex = selectedIndex + delta;
     // Wrap around
+    const visibleItems = getVisibleItems();
+    if (visibleItems.length === 0) return;
     if (newIndex < 0) {
-      newIndex = items.length - 1;
-    } else if (newIndex >= items.length) {
+      newIndex = visibleItems.length - 1;
+    } else if (newIndex >= visibleItems.length) {
       newIndex = 0;
     }
     selectedIndex = newIndex;
@@ -1397,9 +1672,9 @@ function showMainView(renderer: CliRenderer) {
   const launchWithTool = (tool: "ai" | "nvim" | "terminal", newWindow: boolean = false) => {
     const wt = getSelectedWorktree();
     if (!wt) return;
-    
+
     const worktreePath = wt.path;
-    
+
     if (tool === "ai") {
       // Check if this is a Hatchet PR review worktree
       const reviewPRNumber = git.parseReviewPRFromBranch(wt.branch);
@@ -1444,7 +1719,7 @@ function showMainView(renderer: CliRenderer) {
           return;
         }
       }
-      
+
       if (newWindow) {
         launchAIInNewWindow(renderer, worktreePath);
       } else {
@@ -1471,9 +1746,33 @@ function showMainView(renderer: CliRenderer) {
   // Key handlers
   keyHandler = (key: { name?: string; shift?: boolean }) => {
     if (currentView !== "main" || isTransitioning) return;
-    
+
     const newWindow = key.shift === true;
-    
+
+    if (focusedPane === "filter") {
+      if (key.name === "return" || key.name === "enter" || key.name === "escape") {
+        focusedPane = "list";
+        mainFilterInput.blur();
+      }
+      return;
+    }
+
+    if (key.name === "/") {
+      focusedPane = "filter";
+      mainFilterInput.focus();
+      setTimeout(() => {
+        if (mainFilterInput.value === "/") {
+          mainFilterInput.value = "";
+        } else if (mainFilterInput.value.endsWith("/")) {
+          mainFilterInput.value = mainFilterInput.value.slice(0, -1);
+        }
+        filterQuery = mainFilterInput.value.toLowerCase().trim();
+        rebuildList();
+        updateDetails();
+      }, 0);
+      return;
+    }
+
     // Navigation
     if (key.name === "j" || key.name === "down") {
       moveSelection(1);
@@ -1569,7 +1868,7 @@ function showDeleteConfirm(renderer: CliRenderer, worktree: { branch: string; pa
   // Key handler
   const keyHandler = (key: { name?: string }) => {
     if (currentView !== "delete-confirm" || isTransitioning) return;
-    
+
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
       selectedIndex = selectedIndex === 0 ? 1 : 0;
       buttonGroup.updateSelection(selectedIndex);
@@ -1652,13 +1951,13 @@ function showCreateWorktree(renderer: CliRenderer) {
     backgroundColor: Theme.transparent,
     marginTop: 1,
   });
-  
+
   const previewLabel = new TextRenderable(renderer, {
     content: "Will create:",
     fg: Theme.muted,
   });
   previewBox.add(previewLabel);
-  
+
   const previewPath = new TextRenderable(renderer, {
     content: "",
     fg: Theme.secondary,
@@ -1690,6 +1989,10 @@ function showCreateWorktree(renderer: CliRenderer) {
     if (branchName) {
       try {
         const result = git.createWorktree(branchName);
+        writeMetadataForResult(result, {
+          source: "manual",
+          title: branchName,
+        });
         // Track the sanitized branch name so we can select it in main view
         lastCreatedBranch = result.branch;
         // Log post-hook results for debugging
@@ -1705,14 +2008,13 @@ function showCreateWorktree(renderer: CliRenderer) {
         }
         transitionToView(() => showMainView(renderer));
       } catch (error) {
-        // Show error - for now just go back
-        transitionToView(() => showMainView(renderer));
+        showWorktreeErrorPrompt(renderer, branchName, error instanceof Error ? error.message : String(error));
       }
     }
   });
 
   root.add(container);
-  
+
   // Defer focus to next tick to prevent Enter key from immediately triggering
   setTimeout(() => input.focus(), 0);
 }
@@ -1733,7 +2035,7 @@ function showFizzyBoards(renderer: CliRenderer) {
       width: 50,
     });
     modal.add(new TextRenderable(renderer, {
-      content: "No boards found. Check Fizzy configuration.",
+      content: fizzy.getLastError() ? `Could not load boards: ${fizzy.getLastError()}` : "No boards found. Check Fizzy configuration.",
       fg: Theme.warning,
     }));
     modal.add(new TextRenderable(renderer, { content: "" }));
@@ -1741,6 +2043,14 @@ function showFizzyBoards(renderer: CliRenderer) {
       content: "esc back",
       fg: Theme.muted,
     }));
+    const keyHandler = (key: { name?: string }) => {
+      if (currentView !== "fizzy-boards" || isTransitioning) return;
+      if (key.name === "escape" || key.name === "return" || key.name === "enter") {
+        renderer.keyInput.off("keypress", keyHandler);
+        transitionToView(() => showMainView(renderer));
+      }
+    };
+    renderer.keyInput.on("keypress", keyHandler);
     root.add(container);
     return;
   }
@@ -1789,11 +2099,11 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
 
     // Fetch columns
     const columns = fizzy.fetchColumns(board.id);
-    
+
     // Build items list - "All columns" first, then individual columns (excluding Done), then Back
     type ColumnItem = { type: "all" } | { type: "column"; column: typeof columns[0] } | { type: "back" };
     const items: ColumnItem[] = [{ type: "all" }];
-    
+
     for (const col of columns) {
       // Skip "Done" column by default
       if (col.name === "Done") continue;
@@ -1813,7 +2123,7 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
         // Column tile with color indicator
         const col = item.column;
         const colColor = getFizzyColor(col.color?.value);
-        
+
         const tile = new BoxRenderable(renderer, {
           width: "100%",
           flexDirection: "row",
@@ -1826,7 +2136,7 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
           paddingRight: 1,
           marginBottom: 1,
         });
-        
+
         // Color dot
         tile.add(new TextRenderable(renderer, {
           content: "\u25cf",  // filled circle
@@ -1836,7 +2146,7 @@ function showFizzyColumns(renderer: CliRenderer, board: { id: string; name: stri
           content: `  ${col.name}`,
           fg: selected ? Theme.textBright : Theme.text,
         }));
-        
+
         return tile;
       }
     };
@@ -1973,7 +2283,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
 
   // Preview pane reference (will be populated)
   let previewContent: BoxRenderable;
-  
+
   // Track current card's images for external opening
   let currentCardImages: ImageInfo[] = [];
 
@@ -2004,7 +2314,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
         attributes: 1, // Bold
       })
     );
-    
+
     if (card.column_title || card.column?.name) {
       previewContent.add(
         new TextRenderable(renderer, {
@@ -2013,14 +2323,14 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
         })
       );
     }
-    
+
     // Spacer
     previewContent.add(new TextRenderable(renderer, { content: "" }));
 
     // Render description from HTML if available
     if (fullCard.description_html) {
       renderHtml(renderer, previewContent, fullCard.description_html);
-      
+
       // Extract images and show placeholders
       currentCardImages = extractImageUrls(fullCard.description_html);
       if (currentCardImages.length > 0) {
@@ -2030,7 +2340,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
             fg: Theme.muted,
           })
         );
-        
+
         for (const image of currentCardImages) {
           const placeholder = createImagePlaceholder(renderer, {
             width: 30,
@@ -2053,7 +2363,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
     // Render steps
     if (fullCard.steps && fullCard.steps.length > 0) {
       const completed = fullCard.steps.filter(s => s.completed).length;
-      
+
       previewContent.add(new TextRenderable(renderer, { content: "" }));
       previewContent.add(
         new TextRenderable(renderer, {
@@ -2062,7 +2372,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
           attributes: 1, // Bold
         })
       );
-      
+
       for (const step of fullCard.steps) {
         const checkbox = step.completed ? "✓" : "○";
         const color = step.completed ? Theme.success : Theme.text;
@@ -2075,11 +2385,11 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
       }
     }
   }
-  
+
   // Function to open images in external viewer
   function openImagesExternally() {
     if (currentCardImages.length === 0) return;
-    
+
     for (const image of currentCardImages) {
       // Use xdg-open on Linux, open on macOS
       const opener = process.platform === "darwin" ? "open" : "xdg-open";
@@ -2092,11 +2402,11 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
 
   // Custom key handler for pane switching and navigation
   let focusedPane: "filter" | "list" = "list";
-  
+
   const keyHandler = (key: { name: string }) => {
     // Only handle keys when this view is active
     if (currentView !== "fizzy-cards" || isTransitioning) return;
-    
+
     if (key.name === "tab") {
       if (focusedPane === "list") {
         focusedPane = "filter";
@@ -2257,37 +2567,37 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
     const totalItems = filteredCards.length + 1; // includes back option
     const oldIndex = selectedIndex;
     selectedIndex = wrapIndex(newIndex, totalItems);
-    
+
     // Update visual styling in place (no rebuild)
     updateSelectionStyle(oldIndex, selectedIndex);
-    
+
     // Update preview
     if (selectedIndex < filteredCards.length) {
       updatePreview(filteredCards[selectedIndex]);
     } else {
       updatePreview(null);
     }
-    
+
     // Scroll to ensure selected card is visible
     scrollToSelected();
   }
-  
+
   // Scroll to ensure selected item is visible
   function scrollToSelected() {
     if (!cardScrollBox || cardTiles.length === 0 || selectedIndex >= cardTiles.length) return;
-    
+
     // Use scrollHeight and estimate position based on uniform tile assumption
     // since actual heights may not be available until after render
     const contentHeight = cardScrollBox.scrollHeight;
     const numTiles = cardTiles.length;
     const avgTileHeight = contentHeight / numTiles;
-    
+
     const tileTop = selectedIndex * avgTileHeight;
     const tileBottom = tileTop + avgTileHeight;
-    
+
     const viewportHeight = cardScrollBox.viewport.height;
     const currentScroll = cardScrollBox.scrollTop;
-    
+
     // If selected item is above viewport, scroll up
     if (tileTop < currentScroll) {
       cardScrollBox.scrollTop = tileTop;
@@ -2305,8 +2615,10 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
       renderer.keyInput.off("keypress", keyHandler);
       showFizzyColumns(renderer, board);
     } else if (selectedIndex < filteredCards.length) {
+      const card = filteredCards[selectedIndex];
       renderer.keyInput.off("keypress", keyHandler);
-      createWorktreeFromCard(renderer, filteredCards[selectedIndex]);
+      showWorkingView(renderer, "Creating Worktree", `Card #${card.number}`, "Fetching card context, creating worktree, and running setup...");
+      setTimeout(() => createWorktreeFromCard(renderer, card), 0);
     }
   }
 
@@ -2343,7 +2655,7 @@ function showFizzyCards(renderer: CliRenderer, board: { id: string; name: string
   if (allCards.length === 0) {
     leftPane.add(
       new TextRenderable(renderer, {
-        content: "No cards found.",
+        content: fizzy.getLastError() ? `Could not load cards: ${fizzy.getLastError()}` : "No cards found.",
         fg: Theme.warning,
       })
     );
@@ -2510,7 +2822,7 @@ function showGitHubPRs(renderer: CliRenderer) {
     );
 
     // Status row
-    const stateColor = pr.isDraft ? Theme.muted : 
+    const stateColor = pr.isDraft ? Theme.muted :
                        pr.state === "merged" ? Theme.secondary :
                        pr.state === "closed" ? Theme.error :
                        Theme.success;
@@ -2736,7 +3048,7 @@ function showGitHubPRs(renderer: CliRenderer) {
     if (selectedIndex >= 0 && selectedIndex < prTiles.length) {
       if (selectedIndex < filteredPRs.length) {
         const pr = filteredPRs[selectedIndex];
-        const stateColor = pr.isDraft ? Theme.muted : 
+        const stateColor = pr.isDraft ? Theme.muted :
                           pr.state === "merged" ? Theme.secondary :
                           pr.state === "closed" ? Theme.error :
                           Theme.success;
@@ -2784,7 +3096,8 @@ function showGitHubPRs(renderer: CliRenderer) {
     } else if (selectedIndex < filteredPRs.length) {
       const pr = filteredPRs[selectedIndex];
       renderer.keyInput.off("keypress", keyHandler);
-      transitionToView(() => createWorktreeFromPR(renderer, pr));
+      showWorkingView(renderer, "Creating PR Worktree", `PR #${pr.number}`, "Fetching PR head, creating worktree, and running setup...");
+      setTimeout(() => createWorktreeFromPR(renderer, pr), 0);
     }
   }
 
@@ -2792,7 +3105,8 @@ function showGitHubPRs(renderer: CliRenderer) {
     if (selectedIndex < filteredPRs.length) {
       const pr = filteredPRs[selectedIndex];
       renderer.keyInput.off("keypress", keyHandler);
-      transitionToView(() => createReviewWorktreeFromPR(renderer, pr));
+      showWorkingView(renderer, "Creating Review Worktree", `PR #${pr.number}`, "Fetching latest base, merging PR, and running setup...");
+      setTimeout(() => createReviewWorktreeFromPR(renderer, pr), 0);
     }
   }
 
@@ -2829,7 +3143,7 @@ function showGitHubPRs(renderer: CliRenderer) {
   if (allPRs.length === 0) {
     leftPane.add(
       new TextRenderable(renderer, {
-        content: "No open pull requests found.",
+        content: github.getLastError() ? `Could not load PRs: ${github.getLastError()}` : "No open pull requests found.",
         fg: Theme.warning,
       })
     );
@@ -2892,6 +3206,11 @@ function createWorktreeFromPR(renderer: CliRenderer, pr: GitHubPR) {
     }
 
     const result = git.createPRWorktree(pr.number, { headRef: pr.headRef });
+    writeMetadataForResult(result, {
+      source: "github-pr",
+      title: pr.title,
+      pr: { number: pr.number, title: pr.title, headRef: pr.headRef, baseRef: pr.baseRef },
+    });
     lastCreatedBranch = result.branch;
     if (result.projectInfo.hasDatabases) {
       console.log(`Project: ${result.projectInfo.type}, hooks: ${result.postHooks.message}`);
@@ -2909,6 +3228,11 @@ function createReviewWorktreeFromPR(renderer: CliRenderer, pr: GitHubPR) {
       title: pr.title,
       recreateExisting: true,
     });
+    writeMetadataForResult(result, {
+      source: "github-pr-review",
+      title: pr.title,
+      pr: { number: pr.number, title: pr.title, headRef: pr.headRef, baseRef: pr.baseRef, review: true },
+    });
     lastCreatedBranch = result.branch;
 
     const prompt = github.generateReviewPrompt(pr, result.reviewMarkdown);
@@ -2925,6 +3249,30 @@ function createReviewWorktreeFromPR(renderer: CliRenderer, pr: GitHubPR) {
   } catch (error) {
     showPRReviewErrorPrompt(renderer, pr, error instanceof Error ? error.message : String(error));
   }
+}
+
+function showWorktreeErrorPrompt(renderer: CliRenderer, title: string, message: string, back: () => void = () => showMainView(renderer)) {
+  currentView = "confirm";
+  const root = renderer.root;
+  clearChildren(root);
+  const { container, modal, content } = createModal(renderer, {
+    title: "Worktree Failed",
+    subtitle: title,
+    width: 70,
+    statusText: "enter/esc back",
+  });
+  modal.borderColor = Theme.error;
+  content.add(new TextRenderable(renderer, { content: message, fg: Theme.error }));
+
+  const keyHandler = (key: { name?: string }) => {
+    if (currentView !== "confirm" || isTransitioning) return;
+    if (key.name === "return" || key.name === "enter" || key.name === "escape") {
+      renderer.keyInput.off("keypress", keyHandler);
+      transitionToView(back);
+    }
+  };
+  renderer.keyInput.on("keypress", keyHandler);
+  root.add(container);
 }
 
 function showPRWorktreeErrorPrompt(renderer: CliRenderer, pr: GitHubPR, message: string) {
@@ -3343,11 +3691,11 @@ function createWorktreeFromCard(renderer: CliRenderer, card: { number: number; t
   try {
     // Generate branch name from card
     const branchName = fizzy.branchFromCard(card as any, card.number);
-    
+
     // Get card details for prompt
     const fullCard = fizzy.fetchCard(card.number);
     const prompt = fullCard ? fizzy.generateInitialPrompt(fullCard, card.number) : undefined;
-    
+
     // Check if worktree already exists
     if (git.worktreeExists(branchName)) {
       const existingPath = git.worktreePath(branchName);
@@ -3358,10 +3706,15 @@ function createWorktreeFromCard(renderer: CliRenderer, card: { number: number; t
         return;
       }
     }
-    
+
     // Create new worktree and return to main view
     // Track the branch so we can select it in the main view
     const result = git.createWorktree(branchName);
+    writeMetadataForResult(result, {
+      source: "fizzy-card",
+      title: card.title,
+      card: { number: card.number, title: card.title },
+    });
     lastCreatedBranch = result.branch;
     // Log post-hook results
     if (result.projectInfo.hasDatabases) {
@@ -3369,13 +3722,17 @@ function createWorktreeFromCard(renderer: CliRenderer, card: { number: number; t
     }
     showMainView(renderer);
   } catch (error) {
-    // Show error - for now just go back
-    showMainView(renderer);
+    showWorktreeErrorPrompt(
+      renderer,
+      `Card #${card.number}`,
+      error instanceof Error ? error.message : String(error),
+      () => currentBoard ? showFizzyCards(renderer, currentBoard, currentColumnId) : showMainView(renderer)
+    );
   }
 }
 
 function showWorktreeExistsPrompt(
-  renderer: CliRenderer, 
+  renderer: CliRenderer,
   card: { number: number; title: string },
   branchName: string,
   existingPath: string,
@@ -3445,7 +3802,7 @@ function showWorktreeExistsPrompt(
   // Key handler
   const keyHandler = (key: { name?: string }) => {
     if (currentView !== "confirm" || isTransitioning) return;
-    
+
     if (key.name === "left" || key.name === "right" || key.name === "h" || key.name === "l" || key.name === "tab") {
       selectedIndex = selectedIndex === 0 ? 1 : 0;
       buttonGroup.updateSelection(selectedIndex);
@@ -3636,7 +3993,7 @@ function showSwitchWithContextPrompt(
   const rebuildTiles = () => {
     if (isRebuilding) return;
     isRebuilding = true;
-    
+
     for (const tile of tiles) {
       tilesContainer.remove(tile.id);
       tile.destroyRecursively();
@@ -3648,7 +4005,7 @@ function showSwitchWithContextPrompt(
       tiles.push(tile);
       tilesContainer.add(tile);
     });
-    
+
     isRebuilding = false;
   };
 
@@ -3734,7 +4091,7 @@ function showSwitchWithContextPrompt(
 }
 
 function buildAILaunchCommand(prompt?: string): string {
-  let cmd = "omarchy-launch-ai --path .";
+  let cmd = `${getAICommand()} --path .`;
   if (prompt) {
     const escapedPrompt = terminal.escapePath(prompt);
     cmd += ` --prompt '${escapedPrompt}'`;
@@ -3754,7 +4111,7 @@ function launchAIInNewWindow(_renderer: CliRenderer, path: string, prompt?: stri
 
 // Launch nvim in place (takes over current window)
 function launchNvimInPlace(renderer: CliRenderer, path: string) {
-  terminal.runInPlace(path, "nvim .", () => renderer.destroy());
+  terminal.runInPlace(path, `${getEditorCommand()} .`, () => renderer.destroy());
 }
 
 // Launch shell in place (takes over current window)
@@ -3762,9 +4119,9 @@ function launchShellInPlace(renderer: CliRenderer, path: string) {
   terminal.openShellInPlace(path, () => renderer.destroy());
 }
 
-// Launch nvim in a new terminal window (doesn't take over current window)
+// Launch editor in a new terminal window (doesn't take over current window)
 function launchNvim(_renderer: CliRenderer, path: string) {
-  terminal.openTerminalWindow({ path, command: "nvim ." });
+  terminal.openTerminalWindow({ path, command: `${getEditorCommand()} .` });
   // Stay on current view - don't navigate away
 }
 

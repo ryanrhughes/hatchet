@@ -1,7 +1,7 @@
 // Terminal launcher utilities
 // Consolidated helpers for spawning terminal processes
 
-import { execSync, spawn } from "child_process";
+import { execFileSync, execSync, spawn } from "child_process";
 import * as os from "os";
 
 /**
@@ -9,7 +9,7 @@ import * as os from "os";
  */
 export function hasCommand(cmd: string): boolean {
   try {
-    execSync(`which ${cmd}`, { stdio: "ignore" });
+    execFileSync("which", [cmd], { stdio: "ignore" });
     return true;
   } catch {
     return false;

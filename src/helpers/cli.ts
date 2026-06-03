@@ -8,6 +8,11 @@ export interface CliOptions {
   pr?: number;
   reviewPr?: number;
   path?: string;
+  repo?: string;
+  addRepo?: string;
+  repoPath?: string;
+  cloneRepo?: string;
+  listRepos?: boolean;
   launchAi?: boolean;
   /** Deprecated compatibility alias for older URLs/CLI usage. */
   launchOpencode?: boolean;
@@ -60,6 +65,9 @@ export function parseProtocolUrl(url: string): Partial<CliOptions> {
     if (parsed.searchParams.has("path")) {
       options.path = parsed.searchParams.get("path")!;
     }
+    if (parsed.searchParams.has("repo")) {
+      options.repo = parsed.searchParams.get("repo")!;
+    }
     if (parsed.searchParams.get("launch-ai") === "true" || parsed.searchParams.get("launch-opencode") === "true") {
       options.launchAi = true;
       options.launchOpencode = true;
@@ -90,6 +98,8 @@ export async function parseArgs(): Promise<CliOptions> {
     .usage("  $0 --card 123 --path /path/to/repo    Create worktree for card #123")
     .usage("  $0 --pr 456                           Create worktree for PR #456")
     .usage("  $0 --review-pr 456                    Review PR #456 against latest base")
+    .usage("  $0 --repo herald --card 123 -o         Use a registered project")
+    .usage("  $0 --add-repo herald --repo-path ~/Work/herald")
     .usage("  $0 -c 123 -o                          Create and launch AI harness")
     .usage("  $0 -c 123 -o --with-context           Include card/PR/review context")
     .usage("  $0 --list                             List all worktrees")
@@ -110,6 +120,27 @@ export async function parseArgs(): Promise<CliOptions> {
       alias: "p",
       type: "string",
       describe: "Path to git repository (required for protocol handler)",
+    })
+    .option("repo", {
+      type: "string",
+      describe: "Registered Hatchet project name to use",
+    })
+    .option("add-repo", {
+      type: "string",
+      describe: "Add or update a registered Hatchet project by name",
+    })
+    .option("repo-path", {
+      type: "string",
+      describe: "Path for --add-repo, or clone destination for --clone-repo",
+    })
+    .option("clone-repo", {
+      type: "string",
+      describe: "Remote URL for --add-repo, cloned if the repo path is missing",
+    })
+    .option("list-repos", {
+      type: "boolean",
+      describe: "List registered Hatchet projects and exit",
+      default: false,
     })
     .option("launch-ai", {
       alias: "o",
@@ -158,6 +189,11 @@ export async function parseArgs(): Promise<CliOptions> {
     pr: argv.pr,
     reviewPr: argv.reviewPr,
     path: argv.path,
+    repo: argv.repo,
+    addRepo: argv.addRepo,
+    repoPath: argv.repoPath,
+    cloneRepo: argv.cloneRepo,
+    listRepos: argv.listRepos,
     launchAi,
     launchOpencode: launchAi,
     withContext: argv.withContext,

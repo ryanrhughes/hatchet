@@ -19,6 +19,16 @@ export interface HatchetConfig {
   skipEnvCopy?: boolean;
   /** Deprecated: Hatchet now delegates AI launches to omarchy-launch-ai and the user's configured harness. */
   opencodeModel?: string;
+  /** Command used to launch an AI harness. Defaults to omarchy-launch-ai. */
+  aiCommand?: string;
+  /** Command used to launch an editor. Defaults to $VISUAL, $EDITOR, or nvim. */
+  editorCommand?: string;
+  /** Optional command to launch the app/dev server in a worktree. */
+  devCommand?: string;
+  /** Shell commands to run after creating a worktree. */
+  setupCommands?: string[];
+  /** Alias for setupCommands for concise project configs. */
+  setup?: string[];
   /** Additional files to copy when creating worktrees (relative to repo root) */
   additionalFilesToCopy?: string[];
 }
@@ -26,6 +36,7 @@ export interface HatchetConfig {
 const DEFAULT_CONFIG: HatchetConfig = {
   skipDatabaseCopy: false,
   skipEnvCopy: false,
+  aiCommand: "omarchy-launch-ai",
 };
 
 let cachedConfig: HatchetConfig | null = null;

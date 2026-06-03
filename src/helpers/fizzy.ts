@@ -1,12 +1,25 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { FizzyBoard, FizzyColumn, FizzyCard } from "../types";
 
+let lastError: string | null = null;
+
+function errorMessage(error: unknown): string {
+  const err = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString("utf-8") : err.stderr;
+  const stdout = Buffer.isBuffer(err.stdout) ? err.stdout.toString("utf-8") : err.stdout;
+  return (stderr || stdout || err.message || String(error)).trim();
+}
+
+export function getLastError(): string | null {
+  return lastError;
+}
+
 // Use the fizzy CLI for all API calls (handles auth automatically)
-function fizzyCmd(args: string): unknown {
+function fizzyCmd(args: string[]): unknown {
   try {
-    const result = execSync(`fizzy ${args}`, {
+    const result = execFileSync("fizzy", args, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -16,14 +29,16 @@ function fizzyCmd(args: string): unknown {
     }
     return parsed;
   } catch (error) {
-    throw new Error(`Fizzy command failed: ${error}`);
+    const message = errorMessage(error);
+    lastError = message;
+    throw new Error(`Fizzy command failed: ${message}`);
   }
 }
 
 // Check if fizzy is authenticated
 export function isAuthenticated(): boolean {
   try {
-    const result = execSync("fizzy auth status", {
+    const result = execFileSync("fizzy", ["auth", "status"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -87,7 +102,8 @@ function parseBoardFromConfig(path: string): { id: string; name: string } | null
 
 export function fetchBoards(): FizzyBoard[] {
   try {
-    const response = fizzyCmd("board list") as { data: FizzyBoard[] };
+    lastError = null;
+    const response = fizzyCmd(["board", "list"]) as { data: FizzyBoard[] };
     const boards = response.data || [];
     // Sort alphabetically by name
     return boards.sort((a, b) => a.name.localeCompare(b.name));
@@ -98,7 +114,8 @@ export function fetchBoards(): FizzyBoard[] {
 
 export function fetchColumns(boardId: string): FizzyColumn[] {
   try {
-    const response = fizzyCmd(`column list --board ${boardId}`) as {
+    lastError = null;
+    const response = fizzyCmd(["column", "list", "--board", boardId]) as {
       data: FizzyColumn[];
     };
     const columns = response.data || [];
@@ -111,11 +128,12 @@ export function fetchColumns(boardId: string): FizzyColumn[] {
 
 export function fetchCards(boardId: string, columnId?: string | null): FizzyCard[] {
   try {
-    let cmd = `card list --board ${boardId} --all`;
+    lastError = null;
+    const args = ["card", "list", "--board", boardId, "--all"];
     if (columnId) {
-      cmd += ` --column ${columnId}`;
+      args.push("--column", columnId);
     }
-    const response = fizzyCmd(cmd) as { data: FizzyCard[] };
+    const response = fizzyCmd(args) as { data: FizzyCard[] };
     // Filter to only published cards
     const cards = response.data || [];
     return cards.filter(c => c.status === "published");
@@ -126,7 +144,8 @@ export function fetchCards(boardId: string, columnId?: string | null): FizzyCard
 
 export function fetchCard(cardNumber: number): FizzyCard | null {
   try {
-    const response = fizzyCmd(`card show ${cardNumber}`) as {
+    lastError = null;
+    const response = fizzyCmd(["card", "show", cardNumber.toString()]) as {
       data: FizzyCard;
     };
     return response.data || null;

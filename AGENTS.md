@@ -178,6 +178,12 @@ hatchet --pr 456 -o --with-context
 # Work with a specific repo (useful for protocol handler)
 hatchet --card 123 --path /home/user/myproject --launch-ai
 
+# Register/use projects from anywhere
+hatchet --add-repo herald --repo-path ~/Work/herald
+hatchet --add-repo nebula --clone-repo git@github.com:org/nebula.git
+hatchet --repo herald --card 123 -o --with-context
+hatchet --list-repos
+
 # List all worktrees
 hatchet --list
 ```
@@ -377,6 +383,8 @@ Hatchet supports configuration via JSONC files (JSON with comments). Config is l
 
 Project config takes precedence over global config.
 
+Hatchet also supports a global project registry at `~/.config/hatchet/projects.jsonc`. When launched outside a git repo, the TUI opens a project picker. Use `hatchet --add-repo <name> --repo-path <path>` or `hatchet --add-repo <name> --clone-repo <remote>` to populate it.
+
 ### Available Options
 
 ```jsonc
@@ -385,6 +393,14 @@ Project config takes precedence over global config.
   "skipDatabaseCopy": false,
   // Skip copying environment files (.env, .env.local, master.key, etc.)
   "skipEnvCopy": false,
+  // AI launcher command used by `c` and `--launch-ai`
+  "aiCommand": "omarchy-launch-ai",
+  // Editor command used by `n`; defaults to $VISUAL, $EDITOR, then nvim
+  "editorCommand": "nvim",
+  // Optional dev command recorded in per-worktree metadata
+  "devCommand": "bin/dev",
+  // Setup commands run after creating a worktree
+  "setupCommands": ["bundle install", "bin/rails db:prepare"],
   // Additional files to copy when creating worktrees (relative to repo root)
   "additionalFilesToCopy": ["special_file", "config/custom.yml"]
 }

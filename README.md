@@ -141,6 +141,27 @@ hatchet/review-pr-456
 
 It also writes `.hatchet/review.md` in the review worktree with merge status, base-branch advancement, changed-file overlap, conflicts, and useful review commands. In the TUI's Pull Requests list, press `r` on a PR to create this latest-base review worktree.
 
+## Project Registry
+
+Hatchet can be launched outside a repository and used as a project picker. Register projects globally in `~/.config/hatchet/projects.jsonc` with the CLI:
+
+```bash
+# Register an existing checkout
+hatchet --add-repo herald --repo-path ~/Work/herald
+
+# Register a repo URL; Hatchet clones it on first use if the path is missing
+hatchet --add-repo nebula --clone-repo git@github.com:org/nebula.git
+
+# Use a registered project non-interactively
+hatchet --repo herald --card 123 -o --with-context
+hatchet --repo nebula --pr 456 -o
+
+# List registered projects
+hatchet --list-repos
+```
+
+When you run `hatchet` outside a git repo, the TUI starts from this registered project list.
+
 ## Browser Extension
 
 The Hatchet Chrome extension adds an "Open in Hatchet" button to Fizzy, allowing you to create or switch to a worktree directly from your browser.
@@ -272,7 +293,17 @@ Project config takes precedence over global config.
   "skipDatabaseCopy": false,
   // Skip copying environment files (.env.local, master.key, etc.)
   "skipEnvCopy": false,
+  // Command used for `c` / `--launch-ai`; defaults to omarchy-launch-ai
+  "aiCommand": "omarchy-launch-ai",
+  // Editor command for `n`; defaults to $VISUAL, $EDITOR, then nvim
+  "editorCommand": "nvim",
+  // Optional dev command shown in metadata for future launch flows
+  "devCommand": "bin/dev",
+  // Setup commands run after new worktree creation
+  "setupCommands": ["bundle install", "bin/rails db:prepare"],
   // Additional files to copy when creating worktrees
   "additionalFilesToCopy": ["special_file", "config/custom.yml"]
 }
 ```
+
+Hatchet writes per-worktree metadata to `.hatchet/meta.json` and excludes `.hatchet/` from the worktree's Git status. Metadata records the source card/PR/manual branch, copied files, setup status, and launch commands.

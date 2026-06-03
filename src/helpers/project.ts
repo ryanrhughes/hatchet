@@ -7,8 +7,9 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import { execSync } from "child_process";
 import { hasSqliteDatabases, cloneDatabases, getDatabaseSummary } from "./database";
-import { loadConfig } from "./config";
+import { loadConfig, type HatchetConfig } from "./config";
 
 export type ProjectType = "rails" | "node" | "bun" | "unknown";
 
@@ -69,6 +70,8 @@ export interface PostWorktreeResult {
   dbFilesCopied?: number;
   /** Number of other files copied */
   filesCopied?: number;
+  /** Setup commands that were run after worktree creation */
+  commandsRun?: string[];
 }
 
 /**
@@ -80,28 +83,97 @@ export function runPostWorktreeHooks(
 ): PostWorktreeResult {
   const projectInfo = detectProjectType(repoRoot);
   const config = loadConfig(repoRoot);
+  const results: PostWorktreeResult[] = [];
   
   // For Rails projects with SQLite databases, clone them directly
   // (unless skipDatabaseCopy is enabled in config)
   if (projectInfo.type === "rails" && projectInfo.hasDatabases) {
     if (config.skipDatabaseCopy) {
-      return {
+      results.push({
         success: true,
         message: "Database copying skipped (disabled in config)",
-      };
+      });
+    } else {
+      results.push(cloneSqliteDatabases(repoRoot, worktreePath));
     }
-    return cloneSqliteDatabases(repoRoot, worktreePath);
+  } else {
+    results.push({
+      success: true,
+      message: `No databases to clone for ${projectInfo.type} project`,
+    });
   }
-  
-  return {
-    success: true,
-    message: `No databases to clone for ${projectInfo.type} project`,
-  };
+
+  const setupResult = runSetupCommands(worktreePath, config);
+  if (setupResult) {
+    results.push(setupResult);
+  }
+
+  return combinePostWorktreeResults(results);
 }
 
 /**
  * Clone SQLite databases directly (no rake task needed)
  */
+function getSetupCommands(config: HatchetConfig): string[] {
+  return config.setupCommands ?? config.setup ?? [];
+}
+
+function runSetupCommands(worktreePath: string, config: HatchetConfig): PostWorktreeResult | null {
+  const commands = getSetupCommands(config).filter(command => command.trim().length > 0);
+  if (commands.length === 0) return null;
+
+  const details: string[] = [];
+  const shell = process.env.SHELL || "/bin/bash";
+
+  for (const command of commands) {
+    details.push(`$ ${command}`);
+    try {
+      const output = execSync(command, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        shell,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      if (output.trim()) details.push(output.trim());
+    } catch (error) {
+      const err = error as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
+      const stdout = Buffer.isBuffer(err.stdout) ? err.stdout.toString("utf-8") : err.stdout;
+      const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString("utf-8") : err.stderr;
+      const message = (stderr || stdout || err.message || "Setup command failed").trim();
+      details.push(message);
+      return {
+        success: false,
+        message: `Setup failed: ${command}`,
+        details: details.join("\n"),
+        commandsRun: commands,
+      };
+    }
+  }
+
+  return {
+    success: true,
+    message: `${commands.length} setup command(s) completed`,
+    details: details.join("\n"),
+    commandsRun: commands,
+  };
+}
+
+function combinePostWorktreeResults(results: PostWorktreeResult[]): PostWorktreeResult {
+  const success = results.every(result => result.success);
+  const messages = results.map(result => result.message).filter(Boolean);
+  const details = results.map(result => result.details).filter(Boolean).join("\n");
+  const commandsRun = results.flatMap(result => result.commandsRun ?? []);
+
+  return {
+    success,
+    message: messages.join("; "),
+    details: details || undefined,
+    dbFilesCopied: results.reduce((sum, result) => sum + (result.dbFilesCopied ?? 0), 0),
+    filesCopied: results.reduce((sum, result) => sum + (result.filesCopied ?? 0), 0),
+    commandsRun: commandsRun.length > 0 ? commandsRun : undefined,
+  };
+}
+
 function cloneSqliteDatabases(
   repoRoot: string,
   worktreePath: string
@@ -183,16 +255,25 @@ export function copyWorktreeFiles(
     ...(config.additionalFilesToCopy ?? []),
   ];
   
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedWorktreePath = path.resolve(worktreePath);
+
   for (const file of filesToCopy) {
-    const src = path.join(repoRoot, file);
-    const dst = path.join(worktreePath, file);
+    const normalizedFile = file.replace(/^\/+/, "");
+    const src = path.resolve(resolvedRepoRoot, normalizedFile);
+    const dst = path.resolve(resolvedWorktreePath, normalizedFile);
+
+    // Never let config escape the repository or target worktree.
+    if (!src.startsWith(`${resolvedRepoRoot}${path.sep}`) || !dst.startsWith(`${resolvedWorktreePath}${path.sep}`)) {
+      continue;
+    }
     
     if (fs.existsSync(src) && !fs.existsSync(dst)) {
       try {
         // Ensure directory exists
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(src, dst);
-        copied.push(file);
+        copied.push(normalizedFile);
       } catch {
         // Ignore copy errors
       }

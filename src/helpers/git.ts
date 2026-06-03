@@ -1,4 +1,4 @@
-import { execFileSync, execSync, spawn } from "child_process";
+import { execFileSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import type { Worktree } from "../types";
@@ -12,15 +12,18 @@ import {
 
 let cachedRepoRoot: string | null = null;
 let cachedWorktrees: Worktree[] | null = null;
+const STATUS_CACHE_TTL_MS = 2_500;
+let cachedBranchStatuses: Map<string, { timestamp: number; status: BranchStatus }> = new Map();
 
 export function clearCache(): void {
   cachedRepoRoot = null;
   cachedWorktrees = null;
+  cachedBranchStatuses.clear();
 }
 
 export function inGitRepo(): boolean {
   try {
-    execSync("git rev-parse --git-dir", { stdio: "pipe" });
+    execFileSync("git", ["rev-parse", "--git-dir"], { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -32,7 +35,7 @@ export function repoRoot(): string {
 
   try {
     // Get the common dir (works for worktrees too)
-    const commonDir = execSync("git rev-parse --git-common-dir", {
+    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
@@ -54,7 +57,7 @@ export function worktrees(): Worktree[] {
   if (cachedWorktrees) return cachedWorktrees;
 
   try {
-    const output = execSync("git worktree list --porcelain", {
+    const output = execFileSync("git", ["worktree", "list", "--porcelain"], {
       encoding: "utf-8",
       cwd: repoRoot(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -490,37 +493,11 @@ export function createWorktree(branch: string, options?: CreateWorktreeOptions):
     : `${name}.${folderSuffix}`;
   const worktreeDir = path.join(parentDir, folderName);
 
-  // Check if branch exists remotely
-  let branchExists = false;
-  try {
-    execSync(`git show-ref --verify --quiet refs/heads/${sanitized}`, {
-      cwd: root,
-      stdio: "pipe",
-    });
-    branchExists = true;
-  } catch {
-    try {
-      execSync(`git show-ref --verify --quiet refs/remotes/origin/${sanitized}`, {
-        cwd: root,
-        stdio: "pipe",
-      });
-      branchExists = true;
-    } catch {
-      // Branch doesn't exist
-    }
-  }
-
-  if (branchExists) {
-    execSync(`git worktree add "${worktreeDir}" "${sanitized}"`, {
-      cwd: root,
-      stdio: "pipe",
-    });
+  if (branchExists(sanitized)) {
+    gitRun(["worktree", "add", worktreeDir, sanitized], root);
   } else {
     // Create new branch from current HEAD
-    execSync(`git worktree add -b "${sanitized}" "${worktreeDir}"`, {
-      cwd: root,
-      stdio: "pipe",
-    });
+    gitRun(["worktree", "add", "-b", sanitized, worktreeDir], root);
   }
 
   clearCache();
@@ -555,10 +532,7 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
   if (!wtPath) return;
 
   try {
-    execSync(`git worktree remove "${wtPath}" --force`, {
-      cwd: repoRoot(),
-      stdio: "pipe",
-    });
+    gitRun(["worktree", "remove", wtPath, "--force"], repoRoot());
   } catch (error) {
     // If git worktree remove fails (e.g., orphaned worktree with invalid .git file),
     // check if the worktree's .git points to a non-existent location
@@ -578,10 +552,7 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
             fs.unlinkSync(gitFilePath);
             // Prune to clean up git's worktree list
             try {
-              execSync("git worktree prune", {
-                cwd: repoRoot(),
-                stdio: "pipe",
-              });
+              gitRun(["worktree", "prune"], repoRoot());
             } catch {
               // Ignore prune errors
             }
@@ -598,10 +569,7 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
     } else {
       // No .git file, just prune
       try {
-        execSync("git worktree prune", {
-          cwd: repoRoot(),
-          stdio: "pipe",
-        });
+        gitRun(["worktree", "prune"], repoRoot());
       } catch {
         // Ignore prune errors
       }
@@ -610,10 +578,7 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
 
   if (deleteBranch) {
     try {
-      execSync(`git branch -D "${branch}"`, {
-        cwd: repoRoot(),
-        stdio: "pipe",
-      });
+      gitRun(["branch", "-D", branch], repoRoot());
     } catch {
       // Branch might not exist or might be checked out elsewhere
     }
@@ -628,10 +593,7 @@ export function removeWorktree(branch: string, deleteBranch = false): void {
  */
 export function fetchBranch(branch: string): boolean {
   try {
-    execSync(`git fetch origin ${branch}`, {
-      cwd: repoRoot(),
-      stdio: "pipe",
-    });
+    gitRun(["fetch", "origin", branch], repoRoot());
     return true;
   } catch {
     return false;
@@ -646,17 +608,11 @@ export function branchExists(branch: string): boolean {
   const root = repoRoot();
   
   try {
-    execSync(`git show-ref --verify --quiet refs/heads/${sanitized}`, {
-      cwd: root,
-      stdio: "pipe",
-    });
+    gitRun(["show-ref", "--verify", "--quiet", `refs/heads/${sanitized}`], root);
     return true;
   } catch {
     try {
-      execSync(`git show-ref --verify --quiet refs/remotes/origin/${sanitized}`, {
-        cwd: root,
-        stdio: "pipe",
-      });
+      gitRun(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${sanitized}`], root);
       return true;
     } catch {
       return false;
@@ -667,17 +623,12 @@ export function branchExists(branch: string): boolean {
 export function defaultBranch(): string {
   try {
     // Try to get the default branch from remote
-    const output = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+    const output = gitOutput(["symbolic-ref", "refs/remotes/origin/HEAD"]);
     return output.replace("refs/remotes/origin/", "");
   } catch {
     // Fall back to common defaults
     try {
-      execSync("git show-ref --verify --quiet refs/heads/main", {
-        stdio: "pipe",
-      });
+      gitRun(["show-ref", "--verify", "--quiet", "refs/heads/main"]);
       return "main";
     } catch {
       return "master";
@@ -700,11 +651,22 @@ export interface BranchStatus {
   staged: number;
   unstaged: number;
   untracked: number;
+  hasUpstream: boolean;
+  upstream?: string;
   lastCommit?: CommitInfo;
   recentCommits: CommitInfo[];
 }
 
+export function clearStatusCache(): void {
+  cachedBranchStatuses.clear();
+}
+
 export function getBranchStatus(worktreePath: string): BranchStatus {
+  const cached = cachedBranchStatuses.get(worktreePath);
+  if (cached && Date.now() - cached.timestamp < STATUS_CACHE_TTL_MS) {
+    return cached.status;
+  }
+
   const status: BranchStatus = {
     ahead: 0,
     behind: 0,
@@ -712,77 +674,58 @@ export function getBranchStatus(worktreePath: string): BranchStatus {
     staged: 0,
     unstaged: 0,
     untracked: 0,
+    hasUpstream: false,
     recentCommits: [],
   };
 
   try {
-    // Get ahead/behind counts
-    // Try multiple refs in order of preference
-    const refsToTry = [
-      "@{upstream}",           // Configured upstream
-      "origin/main",           // Remote main
-      "origin/master",         // Remote master
-      "main",                  // Local main
-      "master",                // Local master
-    ];
-    
-    for (const ref of refsToTry) {
-      try {
-        const revList = execSync(`git rev-list --left-right --count ${ref}...HEAD`, {
-          encoding: "utf-8",
-          cwd: worktreePath,
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
-        const [behind, ahead] = revList.split(/\s+/).map(Number);
-        status.behind = behind || 0;
-        status.ahead = ahead || 0;
-        break; // Successfully got counts, stop trying
-      } catch {
-        // This ref doesn't exist or isn't valid, try next
-        continue;
-      }
-    }
-
-    // Get working tree status
-    const statusOutput = execSync("git status --porcelain", {
-      encoding: "utf-8",
-      cwd: worktreePath,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const statusOutput = gitOutput(["status", "--porcelain=v2", "--branch"], worktreePath);
 
     for (const line of statusOutput.split("\n")) {
       if (!line) continue;
-      const index = line[0];
-      const working = line[1];
-      
-      if (line.startsWith("??")) {
+
+      if (line.startsWith("# branch.upstream ")) {
+        status.hasUpstream = true;
+        status.upstream = line.slice("# branch.upstream ".length);
+        continue;
+      }
+
+      const abMatch = line.match(/^# branch\.ab \+(\d+) -(\d+)$/);
+      if (abMatch) {
+        status.ahead = Number(abMatch[1]) || 0;
+        status.behind = Number(abMatch[2]) || 0;
+        continue;
+      }
+
+      if (line.startsWith("? ")) {
         status.untracked++;
-      } else {
-        if (index !== " " && index !== "?") {
-          status.staged++;
-        }
-        if (working !== " " && working !== "?") {
-          status.unstaged++;
-        }
+        continue;
+      }
+
+      if (line.startsWith("u ")) {
+        status.staged++;
+        status.unstaged++;
+        continue;
+      }
+
+      if (line.startsWith("1 ") || line.startsWith("2 ")) {
+        const indexStatus = line[2];
+        const workingStatus = line[3];
+        if (indexStatus && indexStatus !== "." && indexStatus !== " ") status.staged++;
+        if (workingStatus && workingStatus !== "." && workingStatus !== " ") status.unstaged++;
       }
     }
 
     status.dirty = status.staged > 0 || status.unstaged > 0 || status.untracked > 0;
 
-    // Get recent commits (up to 5)
+    // Get recent commits (up to 5). Use ASCII unit/record separators so commit
+    // messages and author names can safely contain common punctuation like '|'.
     try {
-      const logOutput = execSync(
-        'git log -5 --format="%H|%s|%an|%ai|%ar"',
-        {
-          encoding: "utf-8",
-          cwd: worktreePath,
-          stdio: ["pipe", "pipe", "pipe"],
-        }
-      ).trim();
+      const logOutput = gitOutput(["log", "-5", "--format=%H%x1f%s%x1f%an%x1f%ai%x1f%ar%x1e"], worktreePath);
 
-      for (const line of logOutput.split("\n")) {
-        if (!line) continue;
-        const [hash, message, author, date, relativeDate] = line.split("|");
+      for (const record of logOutput.split("\x1e")) {
+        if (!record.trim()) continue;
+        const [hash, message = "", author = "", date = "", relativeDate = ""] = record.split("\x1f");
         const commit: CommitInfo = {
           hash: hash.slice(0, 7),
           message: message.length > 50 ? message.slice(0, 47) + "..." : message,
@@ -801,8 +744,10 @@ export function getBranchStatus(worktreePath: string): BranchStatus {
       // No commits yet
     }
 
+    cachedBranchStatuses.set(worktreePath, { timestamp: Date.now(), status });
     return status;
   } catch {
+    cachedBranchStatuses.set(worktreePath, { timestamp: Date.now(), status });
     return status;
   }
 }

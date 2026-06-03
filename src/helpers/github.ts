@@ -1,18 +1,33 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import type { GitHubPR } from "../types";
+
+let lastError: string | null = null;
+
+function errorMessage(error: unknown): string {
+  const err = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString("utf-8") : err.stderr;
+  const stdout = Buffer.isBuffer(err.stdout) ? err.stdout.toString("utf-8") : err.stdout;
+  return (stderr || stdout || err.message || String(error)).trim();
+}
+
+export function getLastError(): string | null {
+  return lastError;
+}
 
 /**
  * Execute a gh CLI command and return parsed JSON response
  */
-function ghCmd<T>(args: string): T {
+function ghCmd<T>(args: string[]): T {
   try {
-    const result = execSync(`gh ${args}`, {
+    const result = execFileSync("gh", args, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
     return JSON.parse(result);
   } catch (error) {
-    throw new Error(`GitHub CLI command failed: ${error}`);
+    const message = errorMessage(error);
+    lastError = message;
+    throw new Error(`GitHub CLI command failed: ${message}`);
   }
 }
 
@@ -21,7 +36,7 @@ function ghCmd<T>(args: string): T {
  */
 export function isAuthenticated(): boolean {
   try {
-    execSync("gh auth status", {
+    execFileSync("gh", ["auth", "status"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -36,7 +51,7 @@ export function isAuthenticated(): boolean {
  */
 export function isGitHubRepo(): boolean {
   try {
-    execSync("gh repo view --json name", {
+    execFileSync("gh", ["repo", "view", "--json", "name"], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -76,9 +91,13 @@ export function fetchPRs(options?: {
   const limit = options?.limit || 30;
   
   try {
-    const prs = ghCmd<GhPRResponse[]>(
-      `pr list --state ${state} --limit ${limit} --json number,title,state,headRefName,headRefOid,baseRefName,author,createdAt,updatedAt,body,labels,reviewDecision,isDraft,additions,deletions,changedFiles`
-    );
+    lastError = null;
+    const prs = ghCmd<GhPRResponse[]>([
+      "pr", "list",
+      "--state", state,
+      "--limit", limit.toString(),
+      "--json", "number,title,state,headRefName,headRefOid,baseRefName,author,createdAt,updatedAt,body,labels,reviewDecision,isDraft,additions,deletions,changedFiles",
+    ]);
     
     return prs.map(pr => ({
       number: pr.number,
@@ -108,9 +127,11 @@ export function fetchPRs(options?: {
  */
 export function fetchPR(prNumber: number): GitHubPR | null {
   try {
-    const pr = ghCmd<GhPRResponse>(
-      `pr view ${prNumber} --json number,title,state,headRefName,headRefOid,baseRefName,author,createdAt,updatedAt,body,labels,reviewDecision,isDraft,additions,deletions,changedFiles`
-    );
+    lastError = null;
+    const pr = ghCmd<GhPRResponse>([
+      "pr", "view", prNumber.toString(),
+      "--json", "number,title,state,headRefName,headRefOid,baseRefName,author,createdAt,updatedAt,body,labels,reviewDecision,isDraft,additions,deletions,changedFiles",
+    ]);
     
     return {
       number: pr.number,
