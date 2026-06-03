@@ -14,7 +14,7 @@ import type { FizzyCard, GitHubPR } from "./types";
 import * as git from "./helpers/git";
 import * as fizzy from "./helpers/fizzy";
 import * as github from "./helpers/github";
-import { createPRTile } from "./helpers/pr-tile";
+import { createPRTile, getPRSelectedBorderColor } from "./helpers/pr-tile";
 import { Theme, detectPalette, getFizzyColor, getFizzyColorDimmed } from "./theme";
 import { renderHtml } from "./helpers/html";
 import { createCardTile } from "./helpers/card-tile";
@@ -3048,11 +3048,7 @@ function showGitHubPRs(renderer: CliRenderer) {
     if (selectedIndex >= 0 && selectedIndex < prTiles.length) {
       if (selectedIndex < filteredPRs.length) {
         const pr = filteredPRs[selectedIndex];
-        const stateColor = pr.isDraft ? Theme.muted :
-                          pr.state === "merged" ? Theme.secondary :
-                          pr.state === "closed" ? Theme.error :
-                          Theme.success;
-        prTiles[selectedIndex].borderColor = stateColor;
+        prTiles[selectedIndex].borderColor = getPRSelectedBorderColor(pr);
       } else if (backTile && backTileTextRenderable) {
         backTile.borderColor = Theme.accent;
         backTileTextRenderable.fg = Theme.accent;

@@ -30,6 +30,12 @@ function getPRStateColor(pr: GitHubPR): string {
   return Theme.success; // open
 }
 
+export function getPRSelectedBorderColor(pr: GitHubPR): string {
+  // Draft PRs use Theme.muted for their state color, which is also the default
+  // unselected border color. Use the accent border so selection remains visible.
+  return pr.isDraft ? Theme.accent : getPRStateColor(pr);
+}
+
 // Get contrasting text color for a background
 // For bright colors like green, we need dark text
 function getContrastTextColor(bgColor: string): string {
@@ -65,7 +71,7 @@ export function createPRTile(
   const { pr, selected = false, width = "100%" } = options;
 
   const stateColor = getPRStateColor(pr);
-  const borderColor = selected ? stateColor : Theme.muted;
+  const borderColor = selected ? getPRSelectedBorderColor(pr) : Theme.muted;
 
   // Main PR container with border
   const tile = new BoxRenderable(renderer, {
