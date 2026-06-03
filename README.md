@@ -20,6 +20,21 @@ Requires [Bun](https://bun.sh).
 git clone https://github.com/ryanrhughes/hatchet.git
 cd hatchet
 bun install
+make install
+```
+
+`make install` builds a standalone binary and installs it to `/usr/bin/hatchet` by default, along with the Chrome extension assets under `/usr/share/hatchet`. Override install paths with standard Make variables:
+
+```bash
+make install PREFIX=/usr/local
+make local-install       # installs under ~/.local
+make uninstall
+make check               # typecheck, test, and build
+```
+
+For development without installing:
+
+```bash
 bun hatchet
 ```
 

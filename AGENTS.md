@@ -120,8 +120,14 @@ const ICONS = {
 # Run the app (TUI mode)
 bun hatchet
 
-# Type check (ignore known issues in unused files)
-npx tsc --noEmit 2>&1 | grep -v "src/app.ts\|src/views/"
+# Build/install/check
+make build
+make install
+make check
+make local-install
+
+# Type check
+npx tsc --noEmit
 
 # Toggle console for debugging (in app)
 Press ` (backtick)

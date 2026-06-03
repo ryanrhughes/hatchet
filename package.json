@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "hatchet": "bun src/main.ts",
+    "build": "bun build --compile --outfile dist/hatchet src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
