@@ -1,7 +1,7 @@
 // Terminal launcher utilities
 // Consolidated helpers for spawning terminal processes
 
-import { execFileSync, execSync, spawn } from "child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "child_process";
 import * as os from "os";
 
 /**
@@ -73,6 +73,14 @@ export function openTerminalWindow(options: TerminalLaunchOptions): boolean {
   }
 
   return false;
+}
+
+/**
+ * Wrap a command so that, after it exits (including Ctrl+C), the terminal stays
+ * open in the current directory with an interactive shell.
+ */
+export function wrapCommandWithShell(command: string): string {
+  return `__hatchet_shell=\${SHELL:-/bin/bash}; trap '' INT; ( trap - INT; ${command} ); printf '\\nHatchet: AI harness exited. Staying in this worktree. Type exit to return.\\n'; trap - INT; exec $__hatchet_shell -i`;
 }
 
 function openTerminalWindowMacOS(
@@ -228,6 +236,41 @@ export function runInPlace(
     // Command exited
   }
   process.exit(0);
+}
+
+/**
+ * Run a command in place, then leave the user in an interactive shell in that
+ * directory. This cannot change the parent shell's cwd, so it intentionally
+ * keeps a child shell alive in the worktree after the command exits.
+ */
+export function runInPlaceAndOpenShell(
+  path: string,
+  command: string,
+  destroyRenderer: () => void
+): never {
+  // Destroy renderer first
+  destroyRenderer();
+
+  // Change directory before launching so the child shell and command both start
+  // in the worktree.
+  process.chdir(path);
+
+  const ignoreSigint = () => {};
+  process.on("SIGINT", ignoreSigint);
+
+  const result = spawnSync("sh", ["-c", wrapCommandWithShell(command)], {
+    stdio: "inherit",
+    cwd: path,
+  });
+
+  process.off("SIGINT", ignoreSigint);
+
+  if (result.error) {
+    console.error(`Could not launch command: ${result.error.message}`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 0);
 }
 
 /**

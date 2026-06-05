@@ -562,19 +562,8 @@ function getEditorCommand(): string {
   return config.editorCommand || process.env.VISUAL || process.env.EDITOR || "nvim";
 }
 
-function launchAICli(worktreePath: string, prompt?: string): void {
-  const aiCommand = getAICommand();
-  const args = ["--path", worktreePath];
-  if (prompt) {
-    args.push("--prompt", prompt);
-  }
-
-  const { spawnSync } = require("child_process");
-  const result = spawnSync(aiCommand, args, { stdio: "inherit" });
-  if (result.error) {
-    console.error(`Error: Could not launch AI harness with ${aiCommand}: ${result.error.message}`);
-    process.exit(1);
-  }
+function launchAICli(worktreePath: string, prompt?: string): never {
+  terminal.runInPlaceAndOpenShell(worktreePath, buildAILaunchCommand(prompt), () => {});
 }
 
 function writeMetadataForResult(
@@ -1141,26 +1130,30 @@ function showMainView(renderer: CliRenderer) {
     return a.branch.localeCompare(b.branch);
   });
 
-  // Build items list: worktrees + create options
+  // Build items list: actions first, then worktrees separated visually below.
   type ListItem = { type: "worktree"; wt: typeof worktrees[0] } | { type: "create"; action: symbol; label: string; desc: string; icon: string };
-  const items: ListItem[] = [
-    ...sortedWorktrees.map(wt => ({ type: "worktree" as const, wt })),
+  const actionItems: ListItem[] = [
     { type: "create", action: CREATE_NEW, label: "New worktree", desc: "Create from current HEAD", icon: "\uf067" }, // nf-fa-plus
   ];
 
   // Only show Fizzy option if authenticated
   if (fizzyAuthenticated) {
-    items.push({ type: "create", action: CREATE_FROM_FIZZY, label: "From Fizzy card", desc: "Create from a task card", icon: "\uf0ae" }); // nf-fa-tasks
+    actionItems.push({ type: "create", action: CREATE_FROM_FIZZY, label: "From Fizzy card", desc: "Create from a task card", icon: "\uf0ae" }); // nf-fa-tasks
   } else {
-    items.push({ type: "create", action: CREATE_FROM_FIZZY, label: "Auth Fizzy to pull cards", desc: "Run: fizzy auth login", icon: "\uf023" }); // nf-fa-lock
+    actionItems.push({ type: "create", action: CREATE_FROM_FIZZY, label: "Auth Fizzy to pull cards", desc: "Run: fizzy auth login", icon: "\uf023" }); // nf-fa-lock
   }
 
   // Only show GitHub PR option if authenticated
   if (githubAuthenticated) {
-    items.push({ type: "create", action: CREATE_FROM_PR, label: "From GitHub PR", desc: "Review a pull request", icon: "\uf407" }); // nf-oct-git_pull_request
+    actionItems.push({ type: "create", action: CREATE_FROM_PR, label: "From GitHub PR", desc: "Review a pull request", icon: "\uf407" }); // nf-oct-git_pull_request
   } else {
-    items.push({ type: "create", action: CREATE_FROM_PR, label: "Auth GitHub to pull PRs", desc: "Run: gh auth login", icon: "\uf023" }); // nf-fa-lock
+    actionItems.push({ type: "create", action: CREATE_FROM_PR, label: "Auth GitHub to pull PRs", desc: "Run: gh auth login", icon: "\uf023" }); // nf-fa-lock
   }
+
+  const items: ListItem[] = [
+    ...actionItems,
+    ...sortedWorktrees.map(wt => ({ type: "worktree" as const, wt })),
+  ];
 
   // Custom list with styled tiles
   let filterQuery = "";
@@ -1173,8 +1166,9 @@ function showMainView(renderer: CliRenderer) {
   };
   const getVisibleItems = () => items.filter(itemMatchesFilter);
 
-  // Find initial selection based on lastCreatedBranch
-  let selectedIndex = 0;
+  // Find initial selection. Keep the default on the first worktree so existing
+  // keyboard shortcuts still act on a worktree even though actions render first.
+  let selectedIndex = Math.max(0, items.findIndex(item => item.type === "worktree"));
   if (lastCreatedBranch) {
     const idx = items.findIndex(item =>
       item.type === "worktree" && item.wt.branch === lastCreatedBranch
@@ -1338,15 +1332,38 @@ function showMainView(renderer: CliRenderer) {
     return tile;
   };
 
+  const createWorktreeSeparator = () => {
+    const row = new BoxRenderable(renderer, {
+      width: "100%",
+      flexDirection: "row",
+      backgroundColor: Theme.transparent,
+      marginBottom: 1,
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    row.add(new TextRenderable(renderer, {
+      content: "──────── Worktrees ────────",
+      fg: Theme.muted,
+    }));
+    return row;
+  };
+
   // Rebuild the list
   const rebuildList = () => {
     clearChildren(listContainer);
     const visibleItems = getVisibleItems();
     if (selectedIndex >= visibleItems.length) selectedIndex = Math.max(0, visibleItems.length - 1);
 
+    const showSeparator = visibleItems.some(item => item.type === "create") && visibleItems.some(item => item.type === "worktree");
+    let addedWorktreeSeparator = false;
+
     visibleItems.forEach((item, index) => {
       const selected = index === selectedIndex;
       if (item.type === "worktree") {
+        if (showSeparator && !addedWorktreeSeparator) {
+          listContainer.add(createWorktreeSeparator());
+          addedWorktreeSeparator = true;
+        }
         listContainer.add(createWorktreeTile(item.wt, selected));
       } else {
         listContainer.add(createActionTile(item.label, item.desc, selected, item.icon));
@@ -4096,12 +4113,12 @@ function buildAILaunchCommand(prompt?: string): string {
 }
 
 function launchAI(renderer: CliRenderer, path: string, prompt?: string) {
-  terminal.runInPlace(path, buildAILaunchCommand(prompt), () => renderer.destroy());
+  terminal.runInPlaceAndOpenShell(path, buildAILaunchCommand(prompt), () => renderer.destroy());
 }
 
 // Launch configured AI harness in a new terminal window (doesn't take over current window)
 function launchAIInNewWindow(_renderer: CliRenderer, path: string, prompt?: string) {
-  terminal.openTerminalWindow({ path, command: buildAILaunchCommand(prompt) });
+  terminal.openTerminalWindow({ path, command: terminal.wrapCommandWithShell(buildAILaunchCommand(prompt)) });
   // Stay on current view
 }
 
